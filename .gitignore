@@ -1,2 +1,3 @@
 kuairand-starter-kit/KuaiRand-Pure/*
 !/kuairand-starter-kit/KuaiRand-Pure/.gitkeep
+__pycache__
