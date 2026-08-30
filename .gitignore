@@ -2,3 +2,4 @@ kuairand-starter-kit/KuaiRand-Pure/*
 !/kuairand-starter-kit/KuaiRand-Pure/.gitkeep
 __pycache__
 kuairand-starter-kit/submission.csv
+.env
