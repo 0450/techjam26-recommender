@@ -1,30 +1,48 @@
 #!/usr/bin/env python3
-"""Perplexity-backed autonomous research agent for KuaiRand-Pure.
+"""Autonomous FM research agent for KuaiRand-Pure, driven by the Perplexity Agent API.
 
-The agent is intentionally scoped to the public benchmark pipeline only:
-- train/valid are allowed for model development and iteration
-- hidden test remains untouched until the final submission is designated
-- all optimization is driven by the public validation feedback
+Scope discipline (enforced in code, not just comments):
+  - The optimization loop only ever reads splits['train'] and splits['valid'].
+  - splits['test'] (the hidden/held-out period) is never loaded into a metric call
+    anywhere in this file. It is not scored, not printed, not sent to the model.
+  - The only thing produced for a 'test' run is a submission CSV of predicted
+    scores (features only, no labels needed) -- the same thing submit.py --make
+    already does for the official baseline.
 
-This file does not hardcode the API key. It resolves it from the environment and
-fails gracefully with a clear instruction if the secret is not exported.
+Perplexity integration:
+  - Uses the official `perplexityai` SDK (`pip install perplexityai`), not a
+    hand-rolled HTTP client.
+  - Calls `client.responses.create(...)`, which hits POST /v1/agent under the
+    OpenAI-compatible `/v1/responses` alias documented for the Agent API.
+  - Requests structured JSON via `response_format` (json_schema) instead of
+    regex-scraping a JSON blob out of free text.
+  - Keeps conversation state across iterations with `previous_response_id`
+    instead of resending the full experiment history every call.
+  - Enables the `web_search` tool so the model can ground hyperparameter/
+    architecture suggestions in public literature (allowed by the task scope).
+
+The API key is never hardcoded. It is resolved from the PERPLEXITY_API_KEY
+environment variable and is never printed, logged, or written to disk.
 """
 
 import argparse
 import json
 import os
-import re
 import sys
-import time
-import urllib.error
-import urllib.request
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
+from dotenv import load_dotenv
 
 from baseline import FM
 from data import load, encode
 from evaluate import evaluate
+load_dotenv()  # loads PERPLEXITY_API_KEY 
+DEFAULT_MODEL_PRESET = "medium"  # bundles model + tools + limits; overridable via --preset/--model
+
+# ---------------------------------------------------------------------------
+# API key handling
+# ---------------------------------------------------------------------------
 
 
 def resolve_api_key() -> str:
@@ -40,81 +58,110 @@ def resolve_api_key() -> str:
     return api_key
 
 
-class PerplexityAgentClient:
-    """Minimal HTTP wrapper around the Perplexity Agent API.
+# ---------------------------------------------------------------------------
+# Perplexity Agent API client (official SDK)
+# ---------------------------------------------------------------------------
 
-    The project deliberately avoids adding extra dependencies; urllib is sufficient
-    for a small caller. The request shape matches the documented Agent API contract
-    (messages + model/preset, with optional web-grounding tool declarations).
-    """
-
-    def __init__(self, api_key: str, base_url: str = "https://api.perplexity.ai"):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
-
-    def _post_json(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        req = urllib.request.Request(
-            f"{self.base_url}{endpoint}",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
+PLAN_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "best_hypothesis": {"type": "string"},
+        "next_experiments": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 4,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "why": {"type": "string"},
+                    "k": {"type": "integer", "minimum": 2, "maximum": 64},
+                    "lr": {"type": "number", "exclusiveMinimum": 0, "maximum": 0.05},
+                    "epochs": {"type": "integer", "minimum": 5, "maximum": 80},
+                    "patience": {"type": "integer", "minimum": 2, "maximum": 10},
+                },
+                "required": ["name", "why", "k", "lr", "epochs", "patience"],
             },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Perplexity API request failed ({exc.code}): {body[:800]}") from exc
-        except Exception as exc:  # pragma: no cover - network troubleshooting path
-            raise RuntimeError(f"Perplexity API request failed: {exc}") from exc
+        },
+        "stop_rule": {"type": "string"},
+    },
+    "required": ["best_hypothesis", "next_experiments", "stop_rule"],
+}
 
-    def ask(self, prompt: str, *, model: str = "sonar", preset: Optional[str] = None,
-            tools: Optional[List[Dict[str, Any]]] = None, temperature: float = 0.2) -> str:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": temperature,
+
+class PerplexityAgentClient:
+    """Thin wrapper around the official `perplexity` SDK's Agent (`responses`) API."""
+
+    def __init__(self, api_key: str):
+        from perplexity import Perplexity  # imported lazily so --no-agent needs no SDK/network
+
+        self._client = Perplexity(api_key=api_key)
+        self._last_response_id: Optional[str] = None
+
+    def ask_for_plan(self, prompt: str, *, model: Optional[str] = None,
+                      preset: Optional[str] = None, use_web_search: bool = True) -> Dict[str, Any]:
+        """Send `prompt` to the Agent API and return the plan as a parsed dict.
+
+        Uses `previous_response_id` so later calls only need to send new
+        information rather than the full running history.
+        """
+        kwargs: Dict[str, Any] = {
+            "input": prompt,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "research_plan", "schema": PLAN_SCHEMA, "strict": True},
+            },
         }
-        if preset:
-            payload["preset"] = preset
-        if tools:
-            payload["tools"] = tools
-        response = self._post_json("/v1/agent", payload)
-        text = response.get("output_text")
-        if isinstance(text, str) and text.strip():
-            return text.strip()
-        choices = response.get("choices")
-        if isinstance(choices, list) and choices:
-            msg = choices[0].get("message", {})
-            content = msg.get("content")
-            if isinstance(content, str):
-                return content.strip()
-            if isinstance(content, list):
-                return "\n".join(part.get("text", "") for part in content if isinstance(part, dict))
-        return json.dumps(response, indent=2, sort_keys=True)
+        if use_web_search:
+            kwargs["tools"] = [{"type": "web_search"}]
+        if model:
+            kwargs["model"] = model
+        elif preset:
+            kwargs["preset"] = preset
+        if self._last_response_id:
+            kwargs["previous_response_id"] = self._last_response_id
+
+        response = self._client.responses.create(**kwargs)
+        self._last_response_id = getattr(response, "id", None)
+
+        text = getattr(response, "output_text", None)
+        if not text:
+            raise ValueError("Perplexity response had no output_text to parse.")
+        return json.loads(text)
 
 
-def find_first_json_blob(text: str) -> Dict[str, Any]:
-    """Extract a JSON object from mixed text output. This keeps the agent loop robust."""
-    match = re.search(r"\{.*\}", text, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(0))
-        except json.JSONDecodeError:
-            pass
-    raise ValueError(f"Perplexity response did not include parseable JSON: {text[:500]}")
+def default_agent_plan() -> Dict[str, Any]:
+    """Local fallback plan used when the Agent API is disabled or unavailable."""
+    return {
+        "best_hypothesis": (
+            "Increase learning-rate stability and rank-aware regularization around the FM "
+            "encoder before considering deeper architectures."
+        ),
+        "next_experiments": [
+            {"name": "fm_k08_lr3e4", "why": "smaller embedding, lower lr: check underfitting boundary",
+             "k": 8, "lr": 3e-4, "epochs": 50, "patience": 5},
+            {"name": "fm_k16_lr1e3", "why": "current default configuration as a control arm",
+             "k": 16, "lr": 1e-3, "epochs": 40, "patience": 4},
+            {"name": "fm_k24_lr2e3", "why": "slightly higher capacity with a faster schedule",
+             "k": 24, "lr": 2e-3, "epochs": 35, "patience": 4},
+        ],
+        "stop_rule": "Stop when validation primary stays within 0.002 of the best score for 3 consecutive iterations.",
+    }
 
 
-def train_fm_once(splits: Dict[str, List[Tuple]], *, k: int, lr: float, epochs: int, bs: int,
-                 seed: int = 0, patience: int = 4, verbose: bool = False) -> Dict[str, Any]:
-    enc, dim = encode(splits)
+# ---------------------------------------------------------------------------
+# Training / evaluation -- VALIDATION SPLIT ONLY
+# ---------------------------------------------------------------------------
+
+
+def train_fm_once(enc: Dict[str, Any], dim: int, *, k: int, lr: float, epochs: int, bs: int = 8192,
+                   seed: int = 0, patience: int = 4, verbose: bool = False) -> Dict[str, Any]:
+    """Train one FM configuration and score it on the VALID split only.
+
+    `enc`/`dim` must come from data.encode(); this function never reads enc['test'].
+    """
     Xtr, ytr, _ = enc['train']
     Xva, yva, uva = enc['valid']
-    Xte, yte, ute = enc['test']
     model = FM(dim, k=k, lr=lr, seed=seed)
     rng = np.random.default_rng(seed)
     best = -1.0
@@ -148,206 +195,190 @@ def train_fm_once(splits: Dict[str, List[Tuple]], *, k: int, lr: float, epochs: 
         best_state = (model.V.copy(), model.W.copy(), np.float32(model.b))
     model.V, model.W, model.b = best_state
     valid_metrics = evaluate(uva, yva, model.predict(Xva))
-    test_metrics = evaluate(ute, yte, model.predict(Xte))
-    return {'valid': valid_metrics, 'test': test_metrics, 'best_primary': valid_metrics['primary']}
+    return {'valid': valid_metrics, 'model_state': best_state, 'config': {'k': k, 'lr': lr, 'epochs': epochs,
+                                                                           'bs': bs, 'seed': seed, 'patience': patience}}
 
 
-def baseline_experiment(splits: Dict[str, List[Tuple]]) -> Dict[str, Any]:
-    return train_fm_once(splits, k=16, lr=1e-3, epochs=40, bs=8192, seed=0, patience=4)
+def baseline_experiment(enc: Dict[str, Any], dim: int) -> Dict[str, Any]:
+    return train_fm_once(enc, dim, k=16, lr=1e-3, epochs=40, bs=8192, seed=0, patience=4)
 
 
-def candidate_grid(splits: Dict[str, List[Tuple]], seed: int = 0) -> List[Dict[str, Any]]:
-    configs = [
-        {'name': 'fm_k08_lr3e4', 'k': 8, 'lr': 3e-4, 'epochs': 40, 'bs': 8192, 'seed': seed},
-        {'name': 'fm_k16_lr1e3', 'k': 16, 'lr': 1e-3, 'epochs': 40, 'bs': 8192, 'seed': seed},
-        {'name': 'fm_k24_lr2e3', 'k': 24, 'lr': 2e-3, 'epochs': 35, 'bs': 8192, 'seed': seed},
-        {'name': 'fm_k16_lr5e4', 'k': 16, 'lr': 5e-4, 'epochs': 50, 'bs': 8192, 'seed': seed},
-    ]
-    results = []
-    for cfg in configs:
-        metrics = train_fm_once(splits, **{k: v for k, v in cfg.items() if k not in {'name'}})
-        results.append({'name': cfg['name'], 'metrics': metrics, 'primary': metrics['valid']['primary']})
-    return results
+def run_experiment(enc: Dict[str, Any], dim: int, cfg: Dict[str, Any], seed: int) -> Dict[str, Any]:
+    result = train_fm_once(
+        enc,
+        dim,
+        k=int(cfg.get('k', 16)),
+        lr=float(cfg.get('lr', 1e-3)),
+        epochs=int(cfg.get('epochs', 40)),
+        patience=int(cfg.get('patience', 4)),
+        seed=seed,
+    )
+    result['name'] = cfg.get('name', f"cfg_k{cfg.get('k')}_lr{cfg.get('lr')}")
+    result['primary'] = result['valid']['primary']
+    return result
 
 
 def summarize_results(history: List[Dict[str, Any]]) -> str:
     lines = []
     for item in history:
-        metrics = item['metrics']['valid']
-        lines.append(f"{item['name']}: GAUC={metrics['GAUC']:.4f} nDCG@5={metrics['nDCG@5']:.4f} primary={metrics['primary']:.4f}")
+        m = item['valid']
+        cfg = item.get('config', {})
+        lines.append(
+            f"{item['name']}: k={cfg.get('k')} lr={cfg.get('lr')} epochs={cfg.get('epochs')} "
+            f"-> GAUC={m['GAUC']:.4f} nDCG@5={m['nDCG@5']:.4f} primary={m['primary']:.4f}"
+        )
     return "\n".join(lines)
 
 
-def build_agent_prompt(summary: str, baseline: Dict[str, Any], history: List[Dict[str, Any]], max_iterations: int) -> str:
-    return f"""You are an autonomous ML research agent for the KuaiRand-Pure recommendation benchmark.
+def build_agent_prompt(history: List[Dict[str, Any]], baseline_valid_primary: float, iteration: int,
+                        max_iterations: int) -> str:
+    if iteration == 1:
+        return f"""You are an autonomous ML research agent tuning a Factorization Machine (FM) for the
+KuaiRand-Pure recommendation benchmark (within-user ranking; label = long_view; primary
+metric = mean(GAUC, nDCG@5)).
 
-Rules:
-- Only use the training split and the public validation feedback.
-- Never access or infer the hidden test set.
-- Improvement is allowed to fluctuate, but the overall trend must increasingly beat the official baseline on validation.
-- The benchmark target is the official FM baseline: primary = mean(GAUC, nDCG@5), with a baseline of about 0.5946 on test and 0.6016 on valid.
-- The exact submission ranking is computed once on hidden test after the final selection.
+Hard rules:
+- You only ever see validation-split feedback. The hidden test split is never shown to you
+  and must never be referenced.
+- Propose FM hyperparameter configurations only: k (embedding dim), lr, epochs, patience.
+- Improvement need not be monotonic, but your proposals should show a clear intent to search
+  past the current best rather than repeating it.
 
 Current information:
-- Benchmark: KuaiRand-Pure
-- Label: long_view
-- Public validation baseline: {baseline['valid']['primary']:.4f}
-- Public test baseline: {baseline['test']['primary']:.4f}
-- Research iteration budget: {max_iterations}
-- Prior experiments:
-{summary}
+- Official FM baseline, public validation primary: {baseline_valid_primary:.4f}
+- Iteration budget: {max_iterations}
+- This is iteration {iteration}; no experiments have run yet.
 
-Return a compact JSON object with exactly these keys:
-{ {
-  "best_hypothesis": "one sentence",
-  "next_experiments": [{"name": "short identifier", "why": "reasoning", "changes": ["change1", "change2"]}],
-  "stop_rule": "short sentence"
-} }
+Propose {min(3, max_iterations)} FM configurations to try next, each with a brief rationale.
+You may use web search to ground your rationale in published FM/CTR-ranking tuning practice.
+Respond only with the structured JSON object described by the schema."""
+    return f"""Here are the results since the last message (validation-split only; no test data):
+{summarize_results(history[-3:])}
 
-Keep the JSON valid and do not add markdown fences.
-"""
+Best validation primary so far: {max(h['primary'] for h in history):.4f}
+Iteration {iteration} of {max_iterations}.
 
-
-def agent_plan_from_response(text: str) -> Dict[str, Any]:
-    payload = find_first_json_blob(text)
-    if not isinstance(payload, dict):
-        raise ValueError("Perplexity response did not contain a JSON object")
-    payload.setdefault("next_experiments", [])
-    payload.setdefault("best_hypothesis", "Default to FM tuning and listwise ranking alignment")
-    payload.setdefault("stop_rule", "Stop when validation primary no longer improves beyond 0.002 for 3 iterations")
-    return payload
+Propose the next FM configuration(s) to try (k, lr, epochs, patience), building on what worked
+or explicitly moving away from what didn't. Respond only with the structured JSON object
+described by the schema."""
 
 
-def default_agent_plan(history: List[Dict[str, Any]]) -> Dict[str, Any]:
-    last = history[-1] if history else {'name': 'baseline'}
-    return {
-        "best_hypothesis": "Increase learning-rate stability and rank-aware tuning around the FM encoder before moving to deeper architectures.",
-        "next_experiments": [
-            {"name": "fm_tune_1", "why": "small FM hyperparameter sweep is the lowest-risk way to recover signal while keeping the model grounded in the benchmark's within-user ranking objective.", "changes": ["k 8-24", "lr 3e-4 to 2e-3", "patience 4-6"]},
-            {"name": "fm_tune_2", "why": "match the validation objective by favoring ranking-preserving score calibration rather than pure log-loss overfitting.", "changes": ["pairwise objective", "temperature scaling", "calibrate positive-vs-negative margin"]},
-        ],
-        "stop_rule": "Stop when the validation primary score stays within 0.002 of the best score for three consecutive iterations.",
-    }
+# ---------------------------------------------------------------------------
+# Main loop
+# ---------------------------------------------------------------------------
 
 
 def run_agent_loop(data_dir: str, output_path: str, max_iterations: int, split: str, use_agent: bool,
-                   dry_run: bool = False) -> Dict[str, Any]:
+                    model: Optional[str], preset: Optional[str], dry_run: bool = False) -> Dict[str, Any]:
     splits = load(data_dir)
-    print(f"loaded {len(splits['train'])} train rows, {len(splits['valid'])} valid rows, {len(splits['test'])} test rows")
+    print(f"loaded {len(splits['train'])} train rows, {len(splits['valid'])} valid rows "
+          f"(test split loaded but withheld from every metric call below)")
+    enc, dim = encode(splits)
 
-    baseline = baseline_experiment(splits)
-    print(f"baseline valid => GAUC {baseline['valid']['GAUC']:.4f} | nDCG@5 {baseline['valid']['nDCG@5']:.4f} | primary {baseline['valid']['primary']:.4f}")
-    print(f"baseline test  => GAUC {baseline['test']['GAUC']:.4f} | nDCG@5 {baseline['test']['nDCG@5']:.4f} | primary {baseline['test']['primary']:.4f}")
+    baseline = baseline_experiment(enc, dim)
+    print(f"baseline valid => GAUC {baseline['valid']['GAUC']:.4f} | "
+          f"nDCG@5 {baseline['valid']['nDCG@5']:.4f} | primary {baseline['valid']['primary']:.4f}")
 
-    history: List[Dict[str, Any]] = [
-        {'name': 'baseline_fm', 'metrics': baseline, 'primary': baseline['valid']['primary']}
-    ]
+    history: List[Dict[str, Any]] = [{**baseline, 'name': 'baseline_fm', 'primary': baseline['valid']['primary']}]
     best = baseline
-    best_name = 'baseline_fm'
     plateau = 0
 
+    agent: Optional[PerplexityAgentClient] = None
     if use_agent:
         try:
-            api_key = resolve_api_key()
-            agent = PerplexityAgentClient(api_key)
-            prompt = build_agent_prompt(summarize_results(history), baseline, history, max_iterations)
-            raw = agent.ask(prompt, preset='medium', tools=[{'type': 'web_search'}])
-            plan = agent_plan_from_response(raw)
-            print(f"Perplexity plan: {plan.get('best_hypothesis', '')}")
+            agent = PerplexityAgentClient(resolve_api_key())
         except Exception as exc:
-            print(f"Perplexity integration unavailable: {exc}")
-            plan = default_agent_plan(history)
-    else:
-        plan = default_agent_plan(history)
-
-    experiments = []
-    if isinstance(plan.get('next_experiments'), list) and plan['next_experiments']:
-        experiments.extend(plan['next_experiments'])
-    if not experiments:
-        experiments = [
-            {'name': 'fm_tune_1', 'changes': ['k 8-24', 'lr 3e-4 to 2e-3']},
-            {'name': 'fm_tune_2', 'changes': ['pairwise margin objective', 'stability tuning']},
-        ]
+            print(f"Perplexity Agent API unavailable, falling back to local heuristic planner: {exc}")
+            agent = None
 
     for iteration in range(1, max_iterations + 1):
-        candidate_count = min(len(experiments), max(1, max_iterations - iteration + 1))
-        candidates = experiments[:candidate_count]
-        for candidate in candidates:
-            name = candidate.get('name', f'experiment_{iteration}')
-            changes = candidate.get('changes', [])
-            if 'pairwise' in ' '.join(changes).lower() or 'margin' in ' '.join(changes).lower():
-                # A pure pointwise FM is still the safe default here. This branch preserves the project's
-                # benchmarkability while surfacing the research direction the agent suggested.
-                candidate_result = baseline_experiment(splits)
-            else:
-                # Keep the experiment grounded in a narrow FM search. This respects the benchmark constraints
-                # and reproduces the public validation loop without touching hidden labels.
-                candidate_result = max(
-                    candidate_grid(splits, seed=iteration),
-                    key=lambda item: item['primary'],
-                )
-            candidate_result['name'] = name
-            history.append(candidate_result)
-            if candidate_result['primary'] > best['valid']['primary'] + 1e-5:
-                best = candidate_result
-                best_name = name
+        if agent is not None:
+            try:
+                prompt = build_agent_prompt(history, baseline['valid']['primary'], iteration, max_iterations)
+                plan = agent.ask_for_plan(prompt, model=model, preset=preset)
+                print(f"[iter {iteration}] Perplexity hypothesis: {plan.get('best_hypothesis', '')}")
+            except Exception as exc:
+                print(f"[iter {iteration}] Perplexity call failed ({exc}); using local heuristic plan instead")
+                plan = default_agent_plan()
+        else:
+            plan = default_agent_plan()
+
+        experiments = plan.get('next_experiments') or default_agent_plan()['next_experiments']
+        for cfg in experiments:
+            result = run_experiment(enc, dim, cfg, seed=iteration)
+            history.append(result)
+            improved = result['primary'] > best['valid']['primary'] + 1e-5
+            if improved:
+                best = result
                 plateau = 0
             else:
                 plateau += 1
             print(
-                f"iteration {iteration} / {name}: "
-                f"GAUC {candidate_result['metrics']['valid']['GAUC']:.4f} | "
-                f"nDCG@5 {candidate_result['metrics']['valid']['nDCG@5']:.4f} | "
-                f"primary {candidate_result['metrics']['valid']['primary']:.4f}"
+                f"iteration {iteration} / {result['name']}: "
+                f"GAUC {result['valid']['GAUC']:.4f} | nDCG@5 {result['valid']['nDCG@5']:.4f} | "
+                f"primary {result['valid']['primary']:.4f}"
+                + ("  <-- new best" if improved else "")
             )
             if plateau >= 3:
-                print("Convergence reached: validation improvement has stalled for 3 iterations; stopping the loop.")
+                print("Convergence reached: validation improvement has stalled for 3 iterations; stopping.")
                 break
         if plateau >= 3:
             break
 
+    best_name = best.get('name', 'baseline_fm')
+    print(f"final selection: {best_name} with valid primary {best['valid']['primary']:.4f} "
+          f"(delta vs baseline: {best['valid']['primary'] - baseline['valid']['primary']:+.4f})")
+
     if dry_run:
         return {'best': best, 'history': history, 'best_name': best_name}
 
-    rows = splits[split]
-    # Use the final selected model's score ordering on the public validation set; the hidden test is not touched.
-    encoding, dim = encode(splits)
-    X, y, u = encoding[split]
-    model = FM(dim, k=16, lr=1e-3, seed=0)
+    # Refit the selected configuration and score the requested split.
+    # NOTE: this only ever uses X (features) of the target split, never its labels --
+    # identical in spirit to submit.py --make. If split == 'test', no test label is read.
+    cfg = best.get('config', {'k': 16, 'lr': 1e-3, 'epochs': 40, 'patience': 4})
+    Xtr, ytr, _ = enc['train']
+    Xva, yva, uva = enc['valid']
+    X_target, _y_target_unused, _u_target = enc[split]
+    model_fm = FM(dim, k=cfg['k'], lr=cfg['lr'], seed=0)
     rng = np.random.default_rng(0)
     best_seen = -1.0
     best_state = None
-    for ep in range(40):
-        idx = rng.permutation(len(encoding['train'][1]))
-        Xt, yt, _ = encoding['train']
-        for start in range(0, len(idx), 8192):
-            batch = idx[start:start + 8192]
-            model.step(Xt[batch], yt[batch])
-        score = evaluate(encoding['valid'][2], encoding['valid'][1], model.predict(encoding['valid'][0]))['primary']
+    for _ in range(cfg['epochs']):
+        idx = rng.permutation(len(ytr))
+        for start in range(0, len(idx), cfg.get('bs', 8192)):
+            batch = idx[start:start + cfg.get('bs', 8192)]
+            model_fm.step(Xtr[batch], ytr[batch])
+        score = evaluate(uva, yva, model_fm.predict(Xva))['primary']
         if score > best_seen + 1e-5:
             best_seen = score
-            best_state = (model.V.copy(), model.W.copy(), np.float32(model.b))
+            best_state = (model_fm.V.copy(), model_fm.W.copy(), np.float32(model_fm.b))
     if best_state is not None:
-        model.V, model.W, model.b = best_state
-    final_scores = model.predict(X)
+        model_fm.V, model_fm.W, model_fm.b = best_state
+
+    final_scores = model_fm.predict(X_target)
+    rows = splits[split]
     with open(output_path, 'w', newline='') as fh:
         fh.write('row_id,user_id,video_id,score\n')
         for idx, row in enumerate(rows):
             fh.write(f"{idx},{row[1]},{row[2]},{float(final_scores[idx]):.6g}\n")
+    print(f"wrote {split}-split submission to {output_path} (labels of that split were never read)")
 
-    print(f"final selection: {best_name} with valid primary {best['metrics']['valid']['primary']:.4f}")
-    print(f"wrote public split submission to {output_path}")
     return {'best': best, 'history': history, 'best_name': best_name, 'output_path': output_path}
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Perplexity-backed KuaiRand-Pure research agent.')
+    parser = argparse.ArgumentParser(description='Perplexity-Agent-backed KuaiRand-Pure FM research agent.')
     parser.add_argument('--data_dir', default='./KuaiRand-Pure/data', help='KuaiRand-Pure data directory')
-    parser.add_argument('--split', default='valid', choices=['valid', 'test'], help='Split to score locally; hidden test is never accessed.')
-    parser.add_argument('--output', default='submission.csv', help='Submission CSV path for the selected public split.')
-    parser.add_argument('--max-iterations', type=int, default=6, help='Maximum optimization rounds to run.')
-    parser.add_argument('--no-agent', action='store_true', help='Skip the Perplexity Agent API and use the local heuristic planner only.')
-    parser.add_argument('--dry-run', action='store_true', help='Stop after the diagnosis loop without writing a submission CSV.')
+    parser.add_argument('--split', default='valid', choices=['valid', 'test'],
+                         help='Split to write a submission CSV for. Never used to score during the search loop.')
+    parser.add_argument('--output', default='submission.csv', help='Submission CSV path.')
+    parser.add_argument('--max-iterations', type=int, default=6, help='Maximum optimization rounds.')
+    parser.add_argument('--no-agent', action='store_true',
+                         help='Skip the Perplexity Agent API and use the local heuristic planner only.')
+    parser.add_argument('--model', default=None, help='Explicit Perplexity model id (overrides --preset).')
+    parser.add_argument('--preset', default=DEFAULT_MODEL_PRESET,
+                         help='Perplexity Agent API preset (e.g. low/medium/high). Ignored if --model is set.')
+    parser.add_argument('--dry-run', action='store_true', help='Run the search loop without writing a submission CSV.')
     args = parser.parse_args()
 
     try:
@@ -357,6 +388,8 @@ if __name__ == '__main__':
             max_iterations=args.max_iterations,
             split=args.split,
             use_agent=not args.no_agent,
+            model=args.model,
+            preset=args.preset,
             dry_run=args.dry_run,
         )
     except RuntimeError as exc:

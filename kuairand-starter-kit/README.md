@@ -172,4 +172,40 @@ as long as you eventually pass `scores` to `evaluate()`. **The scoring protocol 
 | `baseline_scores.json` | Official released scores + seed variance + convergence parameters. |
 | `submit.py` | Generate / validate submission files. |
 | `ablation_features.py` | Feature ablation experiment; reproduces the result that adding features does not help. |
+| `perplexity_agent.py` | Autonomous FM hyperparameter search driven by the Perplexity Agent API. See below. |
+
+## Perplexity Agent integration (`perplexity_agent.py`)
+
+An autonomous research loop that asks the [Perplexity Agent API](https://docs.perplexity.ai)
+for the next FM hyperparameter configuration to try, trains it, and feeds the validation
+result back for the next round.
+
+**Setup:**
+```bash
+pip install -r requirements-perplexity.txt   # official `perplexityai` SDK; nothing else
+export PERPLEXITY_API_KEY=your_key_here      # get one at https://console.perplexity.ai
+```
+Never commit this key or paste it anywhere public. If it's ever exposed, rotate it in the
+API Console immediately.
+
+**Run:**
+```bash
+python3 perplexity_agent.py --max-iterations 6 --split test --output submission.csv
+python3 perplexity_agent.py --no-agent        # local heuristic planner only, no API/network calls
+```
+
+**Test-set discipline is enforced in code, not just by convention:** the search loop
+(`train_fm_once`, `run_experiment`, `baseline_experiment`) only ever reads
+`enc['train']` / `enc['valid']`; the hidden/held-out split is never passed into a metric
+call anywhere in the file, and nothing about it is ever sent to the Perplexity API. The
+final submission CSV is produced by scoring the *features* of the requested `--split`
+(same as `submit.py --make`) — its labels are never read.
+
+Each round sends the last few validation results back to the model and asks for the next
+`k` / `lr` / `epochs` / `patience` configuration via a strict JSON schema
+(`response_format`), so responses don't need free-text parsing. The `web_search` tool is
+enabled so the model can ground suggestions in public FM/CTR-tuning literature. Conversation
+state carries over between rounds via `previous_response_id`, so only new information is
+sent each call. If the API key is missing or a call fails (e.g. no network), the script logs
+it and falls back to a local heuristic planner rather than crashing the run.
 ```
