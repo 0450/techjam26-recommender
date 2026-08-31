@@ -11,6 +11,7 @@ Usage:
     python3 train_heterogeneous_blend.py
 """
 
+import argparse
 import os
 import time
 import random
@@ -233,7 +234,7 @@ class MultiTaskLowRankDCNv2DeepFM(nn.Module):
 # ==========================================
 # Training Routines
 # ==========================================
-def train_model(model_type, seeds, enc, aux_targets, num_features, device, epochs=12, batch_size=8192, patience=3):
+def train_model(model_type, seeds, enc, aux_targets, num_features, device, epochs=50, batch_size=8192, patience=50):
     Xtr, ytr, utr = enc['train']
     Xva, yva, uva = enc['valid']
     Xte, yte, ute = enc['test']
@@ -340,7 +341,7 @@ def train_model(model_type, seeds, enc, aux_targets, num_features, device, epoch
 # ==========================================
 # Main Orchestration & Blend Grid Search
 # ==========================================
-def main():
+def main(epochs=50, patience=50):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using compute device: {device}")
 
@@ -352,10 +353,12 @@ def main():
     seeds = [42, 1024, 2026, 7, 999]
 
     # Step 1: Train SENet DeepFM
-    val_senet, test_senet = train_model('senet', seeds, enc, aux_targets, num_features, device)
+    val_senet, test_senet = train_model('senet', seeds, enc, aux_targets, num_features, device,
+                                        epochs=epochs, patience=patience)
 
     # Step 2: Train Low-Rank DCNv2
-    val_dcn, test_dcn = train_model('lowrank_dcn', seeds, enc, aux_targets, num_features, device)
+    val_dcn, test_dcn = train_model('lowrank_dcn', seeds, enc, aux_targets, num_features, device,
+                                    epochs=epochs, patience=patience)
 
     # Step 3: Optimize Blending Weights & Power Exponent
     print("\n" + "=" * 60)
@@ -414,4 +417,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--patience', type=int, default=50)
+    args = parser.parse_args()
+    main(epochs=args.epochs, patience=args.patience)
