@@ -1,0 +1,8 @@
+Loaded dataset with rows: {'train': 1141112, 'valid': 124909, 'test': 170588}
+Gemini call failed; proceeding with local planner fallback.
+Starting autonomous FM search over validation-only configurations.
+iteration 1 | fm_reference | valid GAUC 0.6671 nDCG@5 0.5358 primary 0.6015 | test GAUC 0.6621 nDCG@5 0.5286 primary 0.5953
+iteration 2 | fm_lower_lr | valid GAUC 0.6670 nDCG@5 0.5358 primary 0.6014 | test GAUC 0.6621 nDCG@5 0.5292 primary 0.5957
+iteration 3 | fm_higher_lr | valid GAUC 0.6662 nDCG@5 0.5353 primary 0.6008 | test GAUC 0.6615 nDCG@5 0.5288 primary 0.5951
+iteration 4 | fm_k8 | valid GAUC 0.6657 nDCG@5 0.5343 primary 0.6000 | test GAUC 0.6570 nDCG@5 0.5242 primary 0.5906
+iteration 5 | fm_k32 | valid GAUC 0.6664 nDCG@5 0.5354 primary 0.6009 | test GAUC 0.6607 nDCG@5 0.5281 primary 0.5944

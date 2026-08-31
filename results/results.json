@@ -1,0 +1,173 @@
+{
+  "dataset": "KuaiRand-Pure",
+  "selected_model": "fm_reference",
+  "selected_config": {
+    "name": "fm_reference",
+    "k": 16,
+    "lr": 0.001,
+    "epochs": 40,
+    "batch_size": 8192,
+    "patience": 4,
+    "seed": 0
+  },
+  "validation_best": {
+    "GAUC": 0.6671333909034729,
+    "nDCG@5": 0.5358057022094727,
+    "primary": 0.6014695167541504
+  },
+  "test_best": {
+    "GAUC": 0.6621216535568237,
+    "nDCG@5": 0.5285593271255493,
+    "primary": 0.5953404903411865
+  },
+  "delta_over_baseline_valid": {
+    "GAUC": -0.00026660909652709286,
+    "nDCG@5": 0.00010570220947270226,
+    "primary": -0.000130483245849633
+  },
+  "delta_over_baseline_test": {
+    "GAUC": 0.0011216535568236985,
+    "nDCG@5": 0.00035932712554931356,
+    "primary": 0.000740490341186506
+  },
+  "resource_report": {
+    "total_llm_tokens": 0,
+    "total_wall_clock_seconds": 160.92,
+    "iterations_used": 5,
+    "gpu_hours": 0.0
+  },
+  "all_trials": [
+    {
+      "name": "fm_reference",
+      "config": {
+        "name": "fm_reference",
+        "k": 16,
+        "lr": 0.001,
+        "epochs": 40,
+        "batch_size": 8192,
+        "patience": 4,
+        "seed": 0
+      },
+      "valid": {
+        "GAUC": 0.6671333909034729,
+        "nDCG@5": 0.5358057022094727,
+        "primary": 0.6014695167541504,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6621216535568237,
+        "nDCG@5": 0.5285593271255493,
+        "primary": 0.5953404903411865,
+        "users": 23875,
+        "rows": 170588
+      }
+    },
+    {
+      "name": "fm_lower_lr",
+      "config": {
+        "name": "fm_lower_lr",
+        "k": 16,
+        "lr": 0.0005,
+        "epochs": 40,
+        "batch_size": 8192,
+        "patience": 4,
+        "seed": 0
+      },
+      "valid": {
+        "GAUC": 0.6670001149177551,
+        "nDCG@5": 0.5357892513275146,
+        "primary": 0.6013946533203125,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6621321439743042,
+        "nDCG@5": 0.5292434692382812,
+        "primary": 0.5956878066062927,
+        "users": 23875,
+        "rows": 170588
+      }
+    },
+    {
+      "name": "fm_higher_lr",
+      "config": {
+        "name": "fm_higher_lr",
+        "k": 16,
+        "lr": 0.002,
+        "epochs": 40,
+        "batch_size": 8192,
+        "patience": 4,
+        "seed": 0
+      },
+      "valid": {
+        "GAUC": 0.6662424802780151,
+        "nDCG@5": 0.5352581143379211,
+        "primary": 0.6007503271102905,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6614949703216553,
+        "nDCG@5": 0.5287586450576782,
+        "primary": 0.5951268076896667,
+        "users": 23875,
+        "rows": 170588
+      }
+    },
+    {
+      "name": "fm_k8",
+      "config": {
+        "name": "fm_k8",
+        "k": 8,
+        "lr": 0.001,
+        "epochs": 40,
+        "batch_size": 8192,
+        "patience": 4,
+        "seed": 0
+      },
+      "valid": {
+        "GAUC": 0.6657233238220215,
+        "nDCG@5": 0.5343282222747803,
+        "primary": 0.6000257730484009,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6569781303405762,
+        "nDCG@5": 0.5242077708244324,
+        "primary": 0.5905929803848267,
+        "users": 23875,
+        "rows": 170588
+      }
+    },
+    {
+      "name": "fm_k32",
+      "config": {
+        "name": "fm_k32",
+        "k": 32,
+        "lr": 0.001,
+        "epochs": 40,
+        "batch_size": 8192,
+        "patience": 4,
+        "seed": 0
+      },
+      "valid": {
+        "GAUC": 0.6664283871650696,
+        "nDCG@5": 0.5353876352310181,
+        "primary": 0.6009080410003662,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.660666286945343,
+        "nDCG@5": 0.5280849933624268,
+        "primary": 0.5943756103515625,
+        "users": 23875,
+        "rows": 170588
+      }
+    }
+  ],
+  "checkpoint_path": "D:\\techjam26-recommender\\results\\best_fm_checkpoint.npz",
+  "log_path": "D:\\techjam26-recommender\\results\\research_run_log.txt"
+}
