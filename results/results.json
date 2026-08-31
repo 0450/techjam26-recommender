@@ -32,7 +32,7 @@
   },
   "resource_report": {
     "total_llm_tokens": 0,
-    "total_wall_clock_seconds": 160.92,
+    "total_wall_clock_seconds": 152.14,
     "iterations_used": 5,
     "gpu_hours": 0.0
   },

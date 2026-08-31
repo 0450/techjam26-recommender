@@ -1,5 +1,30 @@
 Loaded dataset with rows: {'train': 1141112, 'valid': 124909, 'test': 170588}
-Gemini call failed; proceeding with local planner fallback.
+sdk_http_response=HttpResponse(
+  headers=<dict len=12>
+) candidates=[Candidate(
+  content=Content(
+    parts=[
+      Part(
+        text='',
+        thought_signature=b'\x12\xac\x06\n\xa9\x06\x01\x11M2\x0f\x7f\xcf\xb6\x88\xf1\\\xc4S\x94\xe4\x14:\xb0\x89;\x88"\x89\t\x13\xe6\x03~\xb4T.\x80%\x07/j \xf2\x0e\x0f\x88\x9bCGq\x1f\x8a\x04\xd6:\xd0\xa7\x0e\x15\x14=\xf4\xb5\xdaW\t\xfd[)\xfa\xb7\x9a/\xfd3\x8e\xf9g\x12\xd0\xe5\x9c\x81\xe0%\xb7\x99_\xd0"\xdb\xe9\xb3KO\x19...'
+      ),
+    ],
+    role='model'
+  ),
+  finish_reason=<FinishReason.MALFORMED_FUNCTION_CALL: 'MALFORMED_FUNCTION_CALL'>,
+  index=0
+)] create_time=None model_version='gemini-3.6-flash' prompt_feedback=None response_id='k62VaoGAGdn-4-EP6b7GyQU' usage_metadata=GenerateContentResponseUsageMetadata(
+  candidates_token_count=17,
+  prompt_token_count=84,
+  prompt_tokens_details=[
+    ModalityTokenCount(
+      modality=<MediaModality.TEXT: 'TEXT'>,
+      token_count=84
+    ),
+  ],
+  thoughts_token_count=170,
+  total_token_count=271
+) model_status=None automatic_function_calling_history=[] parsed=None
 Starting autonomous FM search over validation-only configurations.
 iteration 1 | fm_reference | valid GAUC 0.6671 nDCG@5 0.5358 primary 0.6015 | test GAUC 0.6621 nDCG@5 0.5286 primary 0.5953
 iteration 2 | fm_lower_lr | valid GAUC 0.6670 nDCG@5 0.5358 primary 0.6014 | test GAUC 0.6621 nDCG@5 0.5292 primary 0.5957
