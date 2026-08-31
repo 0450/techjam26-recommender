@@ -1,0 +1,74 @@
+{
+  "timestamp": "2026-08-31T06:40:41.451271+00:00",
+  "candidate": {
+    "k": 32,
+    "lr": 0.001,
+    "loss": "bpr",
+    "epochs": 40,
+    "bs": 8192
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "valid": {
+        "GAUC": 0.6702508330345154,
+        "nDCG@5": 0.5367079973220825,
+        "primary": 0.6034793853759766,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.663418173789978,
+        "nDCG@5": 0.5302621126174927,
+        "primary": 0.5968401432037354,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": "artifacts_pipeline\\full_01_k32_lr0.001_bpr_neg1\\model_k32_lr0.001_bpr_s0_1788158107.npz",
+      "elapsed_s": 141.60841608047485
+    },
+    {
+      "seed": 1,
+      "valid": {
+        "GAUC": 0.6675717234611511,
+        "nDCG@5": 0.5359794497489929,
+        "primary": 0.601775586605072,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6631022691726685,
+        "nDCG@5": 0.530305027961731,
+        "primary": 0.5967036485671997,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": "artifacts_pipeline\\full_01_k32_lr0.001_bpr_neg1\\model_k32_lr0.001_bpr_s1_1788158244.npz",
+      "elapsed_s": 136.04818272590637
+    },
+    {
+      "seed": 2,
+      "valid": {
+        "GAUC": 0.6697474122047424,
+        "nDCG@5": 0.5360112190246582,
+        "primary": 0.6028792858123779,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6643235683441162,
+        "nDCG@5": 0.5307069420814514,
+        "primary": 0.5975152254104614,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": "artifacts_pipeline\\full_01_k32_lr0.001_bpr_neg1\\model_k32_lr0.001_bpr_s2_1788158441.npz",
+      "elapsed_s": 197.24809527397156
+    }
+  ],
+  "mean_valid_primary": 0.6027114192644755,
+  "mean_valid_gauc": 0.669189989566803,
+  "mean_valid_ndcg": 0.5362328886985779,
+  "mean_test_primary": 0.5970196723937988,
+  "elapsed_seconds": 475.30519008636475
+}

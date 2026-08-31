@@ -1,0 +1,34 @@
+{
+  "timestamp": "2026-08-31T04:53:50.828238+00:00",
+  "candidate": {
+    "k": 16,
+    "lr": 0.001,
+    "loss": "pointwise",
+    "epochs": 6,
+    "bs": 8192
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "valid": {
+        "GAUC": 0.6661275029182434,
+        "nDCG@5": 0.5359647274017334,
+        "primary": 0.601046085357666,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6614782810211182,
+        "nDCG@5": 0.5283522009849548,
+        "primary": 0.5949152708053589,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": "artifacts_debug\\model_k16_lr0.001_pointwise_s0_1788152030.npz",
+      "elapsed_s": 25.410203456878662
+    }
+  ],
+  "mean_valid_primary": 0.601046085357666,
+  "mean_test_primary": 0.5949152708053589,
+  "elapsed_seconds": 25.45948100090027
+}

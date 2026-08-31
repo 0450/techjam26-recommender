@@ -1,0 +1,130 @@
+[
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.001,
+      "loss": "bpr",
+      "neg_per_pos": 1
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\07_k32_lr0.001_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\07_k32_lr0.001_bpr_neg1\\run_1788157511.json",
+    "mean_valid_primary": 0.6034793853759766
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.001,
+      "loss": "bpr",
+      "neg_per_pos": 1
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\01_k16_lr0.001_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\01_k16_lr0.001_bpr_neg1\\run_1788156888.json",
+    "mean_valid_primary": 0.6032581329345703
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.0005,
+      "loss": "bpr",
+      "neg_per_pos": 1
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\10_k32_lr0.0005_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\10_k32_lr0.0005_bpr_neg1\\run_1788157721.json",
+    "mean_valid_primary": 0.6030669212341309
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.0005,
+      "loss": "bpr",
+      "neg_per_pos": 1
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\04_k16_lr0.0005_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\04_k16_lr0.0005_bpr_neg1\\run_1788157235.json",
+    "mean_valid_primary": 0.6027525663375854
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.001,
+      "loss": "bpr",
+      "neg_per_pos": 3
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\08_k32_lr0.001_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\08_k32_lr0.001_bpr_neg3\\run_1788157611.json",
+    "mean_valid_primary": 0.6012212634086609
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.001,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\00_k16_lr0.001_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\00_k16_lr0.001_pointwise\\run_1788156805.json",
+    "mean_valid_primary": 0.601046085357666
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.001,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\06_k32_lr0.001_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\06_k32_lr0.001_pointwise\\run_1788157456.json",
+    "mean_valid_primary": 0.6009080410003662
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.0005,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\09_k32_lr0.0005_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\09_k32_lr0.0005_pointwise\\run_1788157665.json",
+    "mean_valid_primary": 0.6006664633750916
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.001,
+      "loss": "bpr",
+      "neg_per_pos": 3
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\02_k16_lr0.001_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\02_k16_lr0.001_bpr_neg3\\run_1788157090.json",
+    "mean_valid_primary": 0.599694550037384
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.0005,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\03_k16_lr0.0005_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\03_k16_lr0.0005_pointwise\\run_1788157145.json",
+    "mean_valid_primary": 0.5994711518287659
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.0005,
+      "loss": "bpr",
+      "neg_per_pos": 3
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\11_k32_lr0.0005_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\11_k32_lr0.0005_bpr_neg3\\run_1788157943.json",
+    "mean_valid_primary": 0.5930352210998535
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.0005,
+      "loss": "bpr",
+      "neg_per_pos": 3
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788156769\\05_k16_lr0.0005_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788156769\\05_k16_lr0.0005_bpr_neg3\\run_1788157400.json",
+    "mean_valid_primary": 0.5847346186637878
+  }
+]

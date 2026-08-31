@@ -71,18 +71,83 @@ class FM:
         self.b -= self.lr * g.sum()
         return float(-np.mean(y * np.log(sigmoid(z) + 1e-9) + (1 - y) * np.log(1 - sigmoid(z) + 1e-9)))
 
+    def step_pair(self, Xp, Xn):
+        """True BPR pairwise update: minimizes -log(sigmoid(z_pos - z_neg)).
+        Xp, Xn: (B, F) arrays of positive / negative rows, paired index-for-index.
+        Unlike step(), the global bias self.b cancels in the difference and is not updated."""
+        B = len(Xp)
+        zp, Ep, Sp = self.logits(Xp)
+        zn, En, Sn = self.logits(Xn)
+        d = zp - zn
+        s = sigmoid(d)
+        g = ((s - 1.0) / B).astype(np.float32)          # dL/dz_pos ; dL/dz_neg = -g
+        gV = np.zeros_like(self.V); gW = np.zeros_like(self.W)
+        np.add.at(gW, Xp, g[:, None]);  np.add.at(gW, Xn, -g[:, None])
+        np.add.at(gV, Xp, g[:, None, None] * (Sp[:, None, :] - Ep))
+        np.add.at(gV, Xn, -g[:, None, None] * (Sn[:, None, :] - En))
+        gV += self.l2 * self.V; gW += self.l2 * self.W
+        self.t += 1
+        b1, b2, eps = 0.9, 0.999, 1e-8
+        for P, G, M, Vv in ((self.V, gV, self.mV, self.vV), (self.W, gW, self.mW, self.vW)):
+            M *= b1; M += (1 - b1) * G
+            Vv *= b2; Vv += (1 - b2) * (G * G)
+            P -= self.lr * (M / (1 - b1 ** self.t)) / (np.sqrt(Vv / (1 - b2 ** self.t)) + eps)
+        return float(-np.mean(np.log(s + 1e-9)))
+
     def predict(self, X, bs=200_000):
         return np.concatenate([self.logits(X[i:i + bs])[0] for i in range(0, len(X), bs)])
 
-def run_fm(splits, k=16, lr=0.001, epochs=40, bs=8192, patience=4, seed=0, verbose=True):
+def run_fm(splits, k=16, lr=0.001, epochs=40, bs=8192, patience=4, seed=0, verbose=True,
+           loss='pointwise', neg_per_pos=1):
+    """
+    loss: 'pointwise' (default) or 'bpr' (constructs pos/neg pairs via sampling)
+    neg_per_pos: number of negatives sampled per positive when loss='bpr'
+    """
     enc, dim = encode(splits)
     Xtr, ytr, _ = enc['train']; Xva, yva, uva = enc['valid']; Xte, yte, ute = enc['test']
     m = FM(dim, k=k, lr=lr, seed=seed)
     rng = np.random.default_rng(seed)
     best, best_state, bad = -1, None, 0
+
+    # Precompute per-user positive/negative indices for train when using BPR
+    if loss == 'bpr':
+        user_pos = {}
+        user_neg = {}
+        for idx, u in enumerate(enc['train'][2]):
+            if ytr[idx] == 1.0:
+                user_pos.setdefault(u, []).append(idx)
+            else:
+                user_neg.setdefault(u, []).append(idx)
+
     for ep in range(1, epochs + 1):
-        idx = rng.permutation(len(ytr)); t0 = time.time()
-        losses = [m.step(Xtr[idx[i:i + bs]], ytr[idx[i:i + bs]]) for i in range(0, len(idx), bs)]
+        if loss == 'pointwise':
+            idx = rng.permutation(len(ytr)); t0 = time.time()
+            losses = [m.step(Xtr[idx[i:i + bs]], ytr[idx[i:i + bs]]) for i in range(0, len(idx), bs)]
+        else:  # true BPR: pairwise loss -log sigmoid(z_pos - z_neg), sampled within-user
+            pos_indices = [i for i, val in enumerate(ytr) if val == 1.0]
+            rng.shuffle(pos_indices)
+            t0 = time.time()
+            losses = []
+            for start in range(0, len(pos_indices), max(1, bs)):
+                batch_pos = pos_indices[start:start + bs]
+                pos_rows, neg_rows = [], []
+                for p_idx in batch_pos:
+                    u = enc['train'][2][p_idx]
+                    neg_pool = user_neg.get(u)
+                    for _ in range(neg_per_pos):
+                        if neg_pool and len(neg_pool) > 0:
+                            n_idx = rng.choice(neg_pool)
+                        else:
+                            n_idx = rng.integers(len(ytr))
+                            while n_idx == p_idx:
+                                n_idx = rng.integers(len(ytr))
+                        pos_rows.append(Xtr[p_idx]); neg_rows.append(Xtr[n_idx])
+                if pos_rows:
+                    losses.append(m.step_pair(np.stack(pos_rows), np.stack(neg_rows)))
+            if not losses:
+                idx = rng.permutation(len(ytr))
+                losses = [m.step(Xtr[idx[i:i + bs]], ytr[idx[i:i + bs]]) for i in range(0, len(idx), bs)]
+
         va = evaluate(uva, yva, m.predict(Xva))
         if verbose:
             print(f"  epoch {ep:2d} | loss {np.mean(losses):.4f} | valid GAUC {va['GAUC']:.4f} "
@@ -107,14 +172,20 @@ if __name__ == '__main__':
     ap.add_argument('--k', type=int, default=16)
     ap.add_argument('--lr', type=float, default=0.001)
     ap.add_argument('--epochs', type=int, default=40)
+    ap.add_argument('--bs', type=int, default=8192)
+    ap.add_argument('--patience', type=int, default=4)
     ap.add_argument('--seed', type=int, default=0)
+    ap.add_argument('--loss', choices=['pointwise','bpr'], default='pointwise', help='Training loss style')
+    ap.add_argument('--neg-per-pos', type=int, default=1, help='When using bpr, negatives sampled per positive')
     a = ap.parse_args()
     print(f"loading {a.data_dir} ...")
     splits = load(a.data_dir)
     print({k_: len(v) for k_, v in splits.items()}, f"fields={FIELDS}")
     res = {'pop': run_pop, 'random': lambda s: run_random(s, a.seed),
-           'fm': lambda s: run_fm(s, k=a.k, lr=a.lr, epochs=a.epochs, seed=a.seed)}[a.model](splits)
-    print(f"\n=== {a.model} (seed={a.seed}) ===")
+           'fm': lambda s: run_fm(s, k=a.k, lr=a.lr, epochs=a.epochs, bs=a.bs,
+                                  patience=a.patience, seed=a.seed, verbose=True,
+                                  loss=a.loss, neg_per_pos=a.neg_per_pos)}[a.model](splits)
+    print(f"\n=== {a.model} (seed={a.seed}, loss={a.loss}) ===")
     for sp in ('valid', 'test'):
         r = res[sp]
         print(f"  {sp:5s}  GAUC {r['GAUC']:.4f} | nDCG@5 {r['nDCG@5']:.4f} | primary {r['primary']:.4f}")

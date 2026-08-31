@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-08-31T04:29:26.231979Z",
+  "candidate": {
+    "k": 16,
+    "lr": 0.001,
+    "loss": "pointwise",
+    "epochs": 6,
+    "bs": 8192
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "valid": {
+        "GAUC": 

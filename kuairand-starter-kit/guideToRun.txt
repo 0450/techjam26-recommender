@@ -1,0 +1,16 @@
+Create a Python venv (powershell)
+py -3 -m venv .venv
+
+(Run Directly without env)
+To Run Auto Trainer debug
+.venv\Scripts\python autotrainer.py --data-dir ./KuaiRand-Pure/data --seeds 0 --epochs 6 --out-dir artifacts_debug
+
+To Run Full auto trainer test
+.venv\Scripts\python autotrainer.py --data-dir ./KuaiRand-Pure/data --seeds 0,1,2 --epochs 40 --out-dir artifacts_full --verbosity minimal
+
+To run runGrid.py script, to improve autotrainer:
+.venv\Scripts\python .\runGrid.py --data-dir .\KuaiRand-Pure\data --out-dir artifacts_pipeline --quick-epochs 6 --proxy-seeds 0 --full-seeds 0,1,2 --full-epochs 40 --top-k 2 --verbosity minimal
+
+To check with submit.py
+.venv\Scripts\python submit.py .\artifacts_full\submission_1788151247.csv --score --data_dir .\KuaiRand-Pure\data --split test
+
