@@ -1,0 +1,79 @@
+{
+  "timestamp": "2026-08-31T16:30:07.321861+00:00",
+  "candidate": {
+    "k": 16,
+    "lr": 0.001,
+    "loss": "bpr",
+    "epochs": 40,
+    "bs": 8192
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "valid": {
+        "GAUC": 0.6666059494018555,
+        "nDCG@5": 0.535548746585846,
+        "primary": 0.6010773181915283,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6591575145721436,
+        "nDCG@5": 0.5284436345100403,
+        "primary": 0.5938005447387695,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": ".\\artifacts_pipeline\\bpr_neg1_full\\model_k16_lr0.001_bpr_s0_1788193565.npz",
+      "elapsed_s": 159.0737795829773,
+      "pop_alpha": 0.15
+    },
+    {
+      "seed": 1,
+      "valid": {
+        "GAUC": 0.6644554138183594,
+        "nDCG@5": 0.5347585082054138,
+        "primary": 0.599606990814209,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6588668823242188,
+        "nDCG@5": 0.5281420946121216,
+        "primary": 0.5935044884681702,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": ".\\artifacts_pipeline\\bpr_neg1_full\\model_k16_lr0.001_bpr_s1_1788193700.npz",
+      "elapsed_s": 134.28532791137695,
+      "pop_alpha": 0.3
+    },
+    {
+      "seed": 2,
+      "valid": {
+        "GAUC": 0.6645820140838623,
+        "nDCG@5": 0.5345704555511475,
+        "primary": 0.5995762348175049,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6606179475784302,
+        "nDCG@5": 0.5291623473167419,
+        "primary": 0.5948901176452637,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": ".\\artifacts_pipeline\\bpr_neg1_full\\model_k16_lr0.001_bpr_s2_1788193807.npz",
+      "elapsed_s": 107.05665516853333,
+      "pop_alpha": 0.15
+    }
+  ],
+  "mean_valid_primary": 0.6000868479410807,
+  "mean_valid_gauc": 0.665214459101359,
+  "mean_valid_ndcg": 0.5349592367808024,
+  "mean_test_primary": 0.5940650502840678,
+  "mean_test_gauc": 0.6595474481582642,
+  "mean_test_ndcg": 0.5285826921463013,
+  "elapsed_seconds": 400.65807247161865
+}

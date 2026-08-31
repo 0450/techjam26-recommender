@@ -79,7 +79,7 @@ def main():
         for lr in (0.001, 0.0005):
             grid.append({'k': k, 'lr': lr, 'loss': 'pointwise'})
             grid.append({'k': k, 'lr': lr, 'loss': 'bpr', 'neg_per_pos': 1})
-            grid.append({'k': k, 'lr': lr, 'loss': 'bpr', 'neg_per_pos': 3})
+            grid.append({'k': k, 'lr': lr, 'loss': 'listwise'})
 
     proxy_results = []
 

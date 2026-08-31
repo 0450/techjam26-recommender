@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-08-31T10:08:02.402691+00:00",
+  "candidate": {
+    "k": 32,
+    "lr": 0.0005,
+    "loss": "pointwise",
+    "epochs": 6,
+    "bs": 8192
+  },
+  "mean_valid_primary": 0.6017244458198547,
+  "mean_valid_gauc": 0.6671925187110901,
+  "mean_valid_ndcg": 0.5362563729286194,
+  "mean_test_primary": 0.5953115224838257,
+  "promoted_models": [
+    "artifacts_pipeline\\proxy_1788169957\\09_k32_lr0.0005_pointwise\\best_models\\model_k32_lr0.0005_pointwise_s0_1788170882.npz"
+  ],
+  "run_metrics": "artifacts_pipeline\\proxy_1788169957\\09_k32_lr0.0005_pointwise\\run_1788170882.json"
+}

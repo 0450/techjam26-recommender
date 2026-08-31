@@ -11,6 +11,51 @@ To Run Full auto trainer test
 To run runGrid.py script, to improve autotrainer:
 .venv\Scripts\python .\runGrid.py --data-dir .\KuaiRand-Pure\data --out-dir artifacts_pipeline --quick-epochs 6 --proxy-seeds 0 --full-seeds 0,1,2 --full-epochs 40 --top-k 2 --verbosity minimal
 
-To check with submit.py
-.venv\Scripts\python submit.py .\artifacts_full\submission_1788151247.csv --score --data_dir .\KuaiRand-Pure\data --split test
+To get best param & CSV from runGrid.py
 
+
+To check with submit.py
+.venv\Scripts\python submit.py ./{YOUR_SUBMISSION.CSV_PATH} --score --data_dir .\KuaiRand-Pure\data --split test
+(replace YOUR_SUBMISSION.CSV_PATH with your own path)
+.venv\Scripts\python submit.py ./artifacts_pipeline\full_01_k32_lr0.001_bpr_neg1_s42\submission_1788169469.csv --score --data_dir .\KuaiRand-Pure\data --split test
+
+
+currently use extra fields + listwise (Q2-legal: same split/label/metrics, no evaluate.py edits)
+
+Quick check (1 seed, 6 epochs):
+.venv\Scripts\python autotrainer.py --data-dir ./KuaiRand-Pure/data --k 16 --lr 0.001 --loss listwise --seeds 0 --epochs 6 --out-dir .\artifacts_pipeline\seq_listwise_proxy --verbosity verbose --keep-models
+
+Full run (matches contest seed protocol):
+.venv\Scripts\python autotrainer.py --data-dir ./KuaiRand-Pure/data --k 16 --lr 0.001 --loss listwise --seeds 0,1,2 --epochs 40 --out-dir .\artifacts_pipeline\seq_listwise_full --verbosity normal --keep-models
+
+Pointwise + sequence/pop blend (often the most stable):
+.venv\Scripts\python autotrainer.py --data-dir ./KuaiRand-Pure/data --k 16 --lr 0.001 --loss pointwise --seeds 0,1,2 --epochs 40 --out-dir .\artifacts_pipeline\seq_pointwise_full --verbosity normal --keep-models
+
+Official 5-field ablation:
+.venv\Scripts\python autotrainer.py --data-dir ./KuaiRand-Pure/data --no-extra --no-pop-blend --k 16 --lr 0.001 --loss pointwise --seeds 0 --epochs 6 --out-dir .\artifacts_pipeline\official5_check --verbosity verbose
+
+
+GAUC 0.6646 | nDCG@5 0.5305 | primary 0.5976 (after script)
+GAUC 0.6633 | nDCG@5 0.5304 | primary 0.5968(new params, before script)
+
+
+Top proxy candidates:
+ 1. k16_lr0.001_bpr_neg1 mean_valid_primary=0.6040538549423218 outdir=artifacts_pipeline\proxy_1788169957\01_k16_lr0.001_bpr_neg1
+ 2. k32_lr0.001_bpr_neg1 mean_valid_primary=0.6039974093437195 outdir=artifacts_pipeline\proxy_1788169957\07_k32_lr0.001_bpr_neg1
+ k16_lr0.001_bpr_neg1
+ k32_lr0.001_bpr_neg1
+
+ change the script or edit autortainer so that it automatically goes through submit.py after the iteration
+./artifacts_pipeline\proxy_1788169957\07_k32_lr0.001_bpr_neg1\submission_1788170628.csv
+./artifacts_pipeline\proxy_1788169957\01_k16_lr0.001_bpr_neg1\submission_1788170060.csv
+.venv\Scripts\python submit.py ./artifacts_pipeline\proxy_1788169957\07_k32_lr0.001_bpr_neg1\submission_1788170628.csv --score --data_dir .\KuaiRand-Pure\data --split test
+.venv\Scripts\python submit.py ./artifacts_pipeline\proxy_1788169957\01_k16_lr0.001_bpr_neg1\submission_1788170060.csv --score --data_dir .\KuaiRand-Pure\data --split test
+
+.venv\Scripts\python submit.py ./artifacts_pipeline\bpr_neg1_full\submission_1788193807.csv --score --data_dir .\KuaiRand-Pure\data --split test
+.\artifacts_pipeline\bpr_neg1_full\submission_1788193807.csv
+
+best so far 
+
+k=16
+  ✓ Format and alignment validation passed: 170,588 rows, split=test
+  GAUC 0.6640 | nDCG@5 0.5309 | primary 0.5975

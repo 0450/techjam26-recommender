@@ -11,16 +11,7 @@ Features:
 - safety checks before promotion
 - saves per-seed .npz models and run metrics (JSON)
 - writes a submission CSV for the test split when promoting
-
-Usage examples:
-# quick debug single-seed, short run
-python autotrainer.py --data-dir ./KuaiRand-Pure/data --seeds 0 --epochs 6 --out-dir artifacts_debug
-
-# full run multi-seed (candidate evaluation & possible promotion)
-python autotrainer.py --data-dir ./KuaiRand-Pure/data --seeds 0,1,2 --epochs 40 --out-dir artifacts_full
-
-# run the small built-in grid (cheap proxy: short epochs then inspect/promote)
-python autotrainer.py --data-dir ./KuaiRand-Pure/data --grid --out-dir artifacts_grid
+- optionally runs submit.py to validate & score promoted submissions
 """
 import argparse
 import os
@@ -29,9 +20,11 @@ import time
 import datetime
 import statistics
 import numpy as np
+import subprocess
+import sys
 
-from data import load, encode
-from baseline import FM
+from data import load, encode, pop_scores_for_split
+from baseline import FM, listwise_batches
 from evaluate import evaluate
 
 # ---------------- utils ----------------
@@ -39,11 +32,16 @@ def mkdir(path):
     os.makedirs(path, exist_ok=True)
 
 def save_npz_model(m, path):
-    np.savez(path, V=m.V, W=m.W, b=m.b)
+    # Save V, W, global bias b, and per-feature bias b_feat
+    np.savez(path, V=m.V, W=m.W, b=m.b, b_feat=m.b_feat)
 
 def load_npz_model(path):
-    d = np.load(path)
-    return d['V'], d['W'], float(d['b'])
+    d = np.load(path, allow_pickle=True)
+    V = d['V']
+    W = d['W']
+    b = float(d['b']) if 'b' in d else 0.0
+    b_feat = d['b_feat'] if 'b_feat' in d else np.zeros_like(W)
+    return V, W, b, b_feat
 
 def _to_serializable(x):
     # Recursively convert numpy types -> Python natives so json.dump works.
@@ -97,7 +95,6 @@ def safety_checks(scores, topk=5):
         return False, "NaN/Inf in scores"
     if np.std(scores) < 1e-8:
         return False, "scores collapsed to near-constant"
-    # additional checks can be added here
     return True, "ok"
 
 # ---------------- proposer (small grid) ----------------
@@ -106,7 +103,7 @@ def grid_proposals():
     grid = []
     for k in (8, 16):
         for lr in (0.0005, 0.001):
-            for loss in ('pointwise', 'bpr'):
+            for loss in ('pointwise', 'bpr', 'listwise'):
                 grid.append({'k': k, 'lr': lr, 'loss': loss})
     return grid
 
@@ -120,11 +117,31 @@ def _make_logger(level_name):
     return _log
 
 # ---------------- training wrapper ----------------
-def train_fm_on_enc(enc, dim, args, seed):
-    """Train a single FM instance using arrays returned from encode().
-    enc: dict with enc['train'] = (Xtr,ytr,users) etc.
-    Returns trained model, valid_metrics, test_metrics, elapsed_seconds.
-    """
+def _zscore(x):
+    mu, sd = float(np.mean(x)), float(np.std(x))
+    if sd < 1e-8:
+        return np.zeros_like(x)
+    return (x - mu) / sd
+
+
+def blend_with_pop(fm_scores, pop_scores, alpha):
+    return _zscore(fm_scores) + alpha * _zscore(pop_scores)
+
+
+def tune_pop_alpha(user_ids, labels, fm_scores, pop_scores, grid=None):
+    """Item-pop is a strong within-user prior; blend weight chosen on valid only."""
+    if grid is None:
+        grid = (0.0, 0.15, 0.3, 0.5, 0.8, 1.2)
+    best_a, best_p = 0.0, -1.0
+    for a in grid:
+        p = evaluate(user_ids, labels, blend_with_pop(fm_scores, pop_scores, a))['primary']
+        if p > best_p:
+            best_p, best_a = p, a
+    return best_a, best_p
+
+
+def train_fm_on_enc(enc, dim, args, seed, pop_va=None, pop_te=None):
+    """Train a single FM instance using arrays returned from encode()."""
     Xtr, ytr, utr = enc['train']
     Xva, yva, uva = enc['valid']
     Xte, yte, ute = enc['test']
@@ -135,67 +152,60 @@ def train_fm_on_enc(enc, dim, args, seed):
     bs = args.bs
     start_seed = time.time()
 
-    # precompute per-user pos/neg index lists for bpr
+    user_neg = {}
     if args.loss == 'bpr':
-        user_neg = {}
         for idx, u in enumerate(utr):
             if ytr[idx] == 0.0:
                 user_neg.setdefault(u, []).append(idx)
-
-    # logger
-    log = _make_logger(args.verbosity)
 
     for ep in range(1, args.epochs + 1):
         t0 = time.time()
         if args.loss == 'pointwise':
             idx = rng.permutation(len(ytr))
-            losses = []
-            for i in range(0, len(idx), bs):
-                losses.append(m.step(Xtr[idx[i:i+bs]], ytr[idx[i:i+bs]]))
-        else:  # bpr-like
+            losses = [m.step(Xtr[idx[i:i+bs]], ytr[idx[i:i+bs]]) for i in range(0, len(idx), bs)]
+        elif args.loss == 'listwise':
+            losses = [m.step_listwise(Xb, yb, ub) for Xb, yb, ub in listwise_batches(Xtr, ytr, utr, rng, bs)]
+        else:
             pos_indices = [i for i, v in enumerate(ytr) if v == 1.0]
             rng.shuffle(pos_indices)
             losses = []
             for start in range(0, len(pos_indices), max(1, bs)):
                 chunk = pos_indices[start:start+bs]
-                rows = []
-                labels = []
+                pos_rows, neg_rows = [], []
                 for p_idx in chunk:
                     u = utr[p_idx]
                     pool = user_neg.get(u)
-                    if pool and len(pool) > 0:
-                        for _ in range(args.neg_per_pos):
+                    for _ in range(args.neg_per_pos):
+                        if pool and len(pool) > 0:
                             n_idx = rng.choice(pool)
-                            rows.append(Xtr[n_idx]); labels.append(0.0)
-                        rows.append(Xtr[p_idx]); labels.append(1.0)
-                    else:
-                        for _ in range(args.neg_per_pos):
+                        else:
                             n_idx = rng.integers(len(ytr))
                             while n_idx == p_idx:
                                 n_idx = rng.integers(len(ytr))
-                            rows.append(Xtr[n_idx]); labels.append(0.0)
-                        rows.append(Xtr[p_idx]); labels.append(1.0)
-                if rows:
-                    batch_X = np.stack(rows)
-                    batch_y = np.array(labels, dtype=np.float32)
-                    losses.append(m.step(batch_X, batch_y))
+                        pos_rows.append(Xtr[p_idx]); neg_rows.append(Xtr[n_idx])
+                if pos_rows:
+                    losses.append(m.step_pair(np.stack(pos_rows), np.stack(neg_rows)))
             if not losses:
                 idx = rng.permutation(len(ytr))
                 losses = [m.step(Xtr[idx[i:i+bs]], ytr[idx[i:i+bs]]) for i in range(0, len(idx), bs)]
 
-        va = evaluate(uva, yva, m.predict(Xva))
+        va_scores = m.predict(Xva)
+        alpha = 0.0
+        if pop_va is not None and getattr(args, 'pop_blend', True):
+            alpha, _ = tune_pop_alpha(uva, yva, va_scores, pop_va)
+            va = evaluate(uva, yva, blend_with_pop(va_scores, pop_va, alpha))
+        else:
+            va = evaluate(uva, yva, va_scores)
 
-        # Verbosity handling:
         if args.verbosity == 'verbose':
             print(f"  epoch {ep:2d} | loss {np.mean(losses):.4f} | valid GAUC {va['GAUC']:.4f} "
-                  f"nDCG@5 {va['nDCG@5']:.4f} primary {va['primary']:.4f} | {time.time()-t0:.1f}s")
+                  f"nDCG@5 {va['nDCG@5']:.4f} primary {va['primary']:.4f} | pop_alpha {alpha:.2f} | {time.time()-t0:.1f}s")
         elif args.verbosity == 'normal' and va['primary'] > best + 1e-6:
             print(f"  epoch {ep:2d} primary improved -> {va['primary']:.6f} (time {time.time()-t0:.1f}s)")
-        # minimal: no per-epoch prints
 
         if va['primary'] > best + 1e-5:
             best = va['primary']; bad = 0
-            best_state = (m.V.copy(), m.W.copy(), np.float32(m.b))
+            best_state = (m.V.copy(), m.W.copy(), np.float32(m.b), m.b_feat.copy(), float(alpha))
         else:
             bad += 1
             if bad >= args.patience:
@@ -203,12 +213,33 @@ def train_fm_on_enc(enc, dim, args, seed):
                     print(f"  early stop at epoch {ep}")
                 break
 
+    pop_alpha = 0.0
     if best_state is not None:
-        m.V, m.W, m.b = best_state
-    valid_metrics = evaluate(uva, yva, m.predict(Xva))
-    test_metrics  = evaluate(ute, yte, m.predict(Xte))
+        m.V, m.W, m.b, m.b_feat, pop_alpha = best_state
+    va_scores = m.predict(Xva)
+    te_scores = m.predict(Xte)
+    if pop_va is not None and getattr(args, 'pop_blend', True):
+        valid_metrics = evaluate(uva, yva, blend_with_pop(va_scores, pop_va, pop_alpha))
+        test_metrics = evaluate(ute, yte, blend_with_pop(te_scores, pop_te, pop_alpha))
+    else:
+        valid_metrics = evaluate(uva, yva, va_scores)
+        test_metrics = evaluate(ute, yte, te_scores)
     elapsed = time.time() - start_seed
-    return m, valid_metrics, test_metrics, elapsed
+    return m, valid_metrics, test_metrics, elapsed, pop_alpha
+
+# ---------------- helper: run submit.py on a submission ----------------
+def run_submit_check_and_score(sub_path, data_dir):
+    submit_py = os.path.join(os.path.dirname(__file__), "submit.py")
+    if not os.path.exists(submit_py):
+        print("submit.py not found at", submit_py, " — skipping auto-check/score.")
+        return
+    print("Running submit.py --check on submission:", sub_path)
+    rc = subprocess.run([sys.executable, submit_py, sub_path, "--check", "--data_dir", data_dir, "--split", "test"]).returncode
+    if rc == 0:
+        print("Check passed — running submit.py --score ...")
+        subprocess.run([sys.executable, submit_py, sub_path, "--score", "--data_dir", data_dir, "--split", "test"])
+    else:
+        print("Submission check failed (submit.py returned code", rc, "). Not running score.")
 
 # ---------------- main orchestrator ----------------
 def main():
@@ -220,15 +251,22 @@ def main():
     ap.add_argument('--epochs', type=int, default=40)
     ap.add_argument('--bs', type=int, default=8192)
     ap.add_argument('--patience', type=int, default=4)
-    ap.add_argument('--loss', choices=['pointwise','bpr'], default='pointwise')
+    ap.add_argument('--loss', choices=['pointwise','bpr','listwise'], default='pointwise')
     ap.add_argument('--neg-per-pos', type=int, default=1)
     ap.add_argument('--out-dir', default='artifacts')
     ap.add_argument('--epsilon', type=float, default=0.002)
     ap.add_argument('--keep-models', action='store_true')
+    ap.add_argument('--no-extra', action='store_true', help='Official 5 fields only (no sequence/hour/pop buckets)')
+    ap.add_argument('--no-pop-blend', dest='pop_blend', action='store_false', help='Disable FM+pop score blend')
+    ap.set_defaults(pop_blend=True)
     ap.add_argument('--grid', action='store_true', help='Run small built-in grid of candidates (quick proxy)')
     ap.add_argument('--quick-epochs', type=int, default=6, help='short epoch count for quick proxy runs (grid)')
     ap.add_argument('--verbosity', choices=['minimal','normal','verbose'], default='minimal',
                     help='Output verbosity (minimal=compact, normal=some details, verbose=per-epoch)')
+    # Auto-submit behavior: on by default; use --no-auto-submit to turn off
+    ap.add_argument('--no-auto-submit', dest='auto_submit', action='store_false',
+                    help='Do not automatically run submit.py on promoted submission CSV (default: run it).')
+    ap.set_defaults(auto_submit=True)
     args = ap.parse_args()
 
     mkdir(args.out_dir)
@@ -237,9 +275,11 @@ def main():
 
     print("Loading data and encoding (this may take a moment)...")
     splits = load(args.data_dir)
-    enc, dim = encode(splits)
-    # keep rows for submission if needed
+    enc, dim = encode(splits, extra=not args.no_extra)
+    pop_va = pop_scores_for_split(splits, 'valid')
+    pop_te = pop_scores_for_split(splits, 'test')
     rows_test = splits['test']
+    print(f"fields={enc.get('_fields')} dim={dim} pop_blend={args.pop_blend}")
 
     base_seeds = [int(s) for s in args.seeds.split(',') if s.strip()!='']
 
@@ -296,16 +336,18 @@ def main():
         for s in cand_seeds:
             run_args = argparse.Namespace(k=cand_k, lr=cand_lr, epochs=cand_epochs,
                                           bs=cand_bs, patience=args.patience, loss=cand_loss,
-                                          neg_per_pos=cand_neg, verbosity=args.verbosity)
+                                          neg_per_pos=cand_neg, verbosity=args.verbosity,
+                                          pop_blend=args.pop_blend)
             if args.verbosity != 'minimal':
                 print(f" Training seed {s} (epochs={cand_epochs}) ...")
-            m, valid_metrics, test_metrics, elapsed_seed = train_fm_on_enc(enc, dim, run_args, s)
+            m, valid_metrics, test_metrics, elapsed_seed, pop_alpha = train_fm_on_enc(
+                enc, dim, run_args, s, pop_va=pop_va, pop_te=pop_te)
             stamp = int(time.time())
             model_path = os.path.join(args.out_dir, f"model_k{cand_k}_lr{cand_lr}_{cand_loss}_s{s}_{stamp}.npz")
             save_npz_model(m, model_path)
             model_paths.append(model_path)
-            per_seed_results.append({'seed': s, 'valid': valid_metrics, 'test': test_metrics, 'model': model_path, 'elapsed_s': elapsed_seed})
-            # Minimal single-line per-seed summary
+            per_seed_results.append({'seed': s, 'valid': valid_metrics, 'test': test_metrics,
+                                     'model': model_path, 'elapsed_s': elapsed_seed, 'pop_alpha': pop_alpha})
             elapsed_str = str(datetime.timedelta(seconds=int(elapsed_seed)))
             print(f" seed {s} — valid={valid_metrics['primary']:.6f} test={test_metrics['primary']:.6f} elapsed={elapsed_str}")
 
@@ -313,9 +355,18 @@ def main():
         mean_valid = statistics.mean(float(x['valid']['primary']) for x in per_seed_results)
         mean_test  = statistics.mean(float(x['test']['primary']) for x in per_seed_results)
 
-        # compute mean GAUC and mean nDCG@5 across seeds for the validation split
+        # compute mean GAUC and mean nDCG@5 across seeds for the validation and test splits
         mean_valid_gauc = statistics.mean(float(x['valid']['GAUC']) for x in per_seed_results)
         mean_valid_ndcg = statistics.mean(float(x['valid']['nDCG@5']) for x in per_seed_results)
+        mean_test_gauc = statistics.mean(float(x['test']['GAUC']) for x in per_seed_results)
+        mean_test_ndcg = statistics.mean(float(x['test']['nDCG@5']) for x in per_seed_results)
+
+        # print a compact banner similar to the screenshot
+        sep = "=" * 80
+        print(sep)
+        print(f"Val GAUC  : {mean_valid_gauc:0.4f} | Val nDCG@5 : {mean_valid_ndcg:0.4f} | Val Primary : {mean_valid:0.4f}")
+        print(f"Test GAUC : {mean_test_gauc:0.4f} | Test nDCG@5 : {mean_test_ndcg:0.4f} | Test Primary: {mean_test:0.4f}")
+        print(sep)
 
         # save run metrics
         run_summary = {
@@ -326,6 +377,8 @@ def main():
             'mean_valid_gauc': mean_valid_gauc,
             'mean_valid_ndcg': mean_valid_ndcg,
             'mean_test_primary': mean_test,
+            'mean_test_gauc': mean_test_gauc,
+            'mean_test_ndcg': mean_test_ndcg,
             'elapsed_seconds': elapsed,
         }
         run_filename = os.path.join(args.out_dir, f"run_{int(time.time())}.json")
@@ -339,12 +392,12 @@ def main():
         print(f"Candidate mean_valid_primary={mean_valid:.6f}, best_known={best_known:.6f}, epsilon={args.epsilon}")
         # quick safety check: test inference on test split with the first model (as representative)
         first_model = model_paths[0]
-        V,W,b = load_npz_model(first_model)
+        V,W,b,b_feat = load_npz_model(first_model)
         def fm_predict_with_params(X):
             E = V[X]  # (N,F,k)
             S = E.sum(1)
             inter = 0.5 * ((S ** 2).sum(1) - (E ** 2).sum((1,2)))
-            return b + W[X].sum(1) + inter
+            return b + W[X].sum(1) + b_feat[X].sum(1) + inter
         Xte_arr = enc['test'][0]
         test_scores = fm_predict_with_params(Xte_arr)
         ok, reason = safety_checks(test_scores)
@@ -355,6 +408,21 @@ def main():
                     try: os.remove(p)
                     except: pass
             continue
+
+        mean_alpha = statistics.mean(float(x.get('pop_alpha', 0.0)) for x in per_seed_results)
+        logits = None
+        for p in model_paths:
+            Vp, Wp, bp, bp_feat = load_npz_model(p)
+            E = Vp[Xte_arr]; S = E.sum(1)
+            inter = 0.5 * ((S ** 2).sum(1) - (E ** 2).sum((1, 2)))
+            cur = bp + Wp[Xte_arr].sum(1) + bp_feat[Xte_arr].sum(1) + inter
+            logits = cur if logits is None else logits + cur
+        logits /= len(model_paths)
+        if args.pop_blend:
+            logits = blend_with_pop(logits, pop_te, mean_alpha)
+        sub_path = os.path.join(args.out_dir, f"submission_{int(time.time())}.csv")
+        make_submission_csv(sub_path, rows_test, logits)
+        print("Wrote submission for test split:", sub_path)
 
         if mean_valid > best_known + args.epsilon:
             promoted = True
@@ -381,27 +449,15 @@ def main():
             save_json(best_record, best_file)
             print("Updated best metrics:", best_file)
 
-            # produce a submission CSV (test split) using averaged scores from per-seed models
-            logits = None
-            for p in promoted_paths:
-                Vp,Wp,bp = load_npz_model(p)
-                E = Vp[Xte_arr]; S = E.sum(1)
-                inter = 0.5 * ((S ** 2).sum(1) - (E ** 2).sum((1,2)))
-                cur = bp + Wp[Xte_arr].sum(1) + inter
-                if logits is None:
-                    logits = cur
-                else:
-                    logits += cur
-            logits /= len(promoted_paths)
-            sub_path = os.path.join(args.out_dir, f"submission_{int(time.time())}.csv")
-            make_submission_csv(sub_path, rows_test, logits)
-            print("Wrote submission for test split:", sub_path)
         else:
             print("Candidate did not beat best_known; not promoting.")
             if not args.keep_models:
                 for p in model_paths:
                     try: os.remove(p)
                     except: pass
+
+        if getattr(args, 'auto_submit', True):
+            run_submit_check_and_score(sub_path, args.data_dir)
 
         # detailed run summary with improvement vs previous best
         val_primaries = [float(x['valid']['primary']) for x in per_seed_results]
@@ -426,11 +482,11 @@ def main():
         print(f"  validation nDCG@5 : {mean_valid_ndcg:.6f} ± {sd_valid_ndcg:.6f}")
         if best_known is not None and best_known >= 0:
             if pct is not None:
-                print(f"  improvement vs best: Δ={delta:.6f} (≈{pct:.3f}%)  [epsilon={args.epsilon}]")
+                print(f"  improvement vs best: d={delta:.6f} (~{pct:.3f}%)  [epsilon={args.epsilon}]")
             else:
-                print(f"  improvement vs best: Δ={delta:.6f}  [epsilon={args.epsilon}]")
+                print(f"  improvement vs best: d={delta:.6f}  [epsilon={args.epsilon}]")
         else:
-            print(f"  improvement vs best: Δ={delta:.6f}  [no previous champion]")
+            print(f"  improvement vs best: d={delta:.6f}  [no previous champion]")
         print(f"  elapsed: {elapsed_str}  => {promoted_flag}")
 
     print("All candidates processed. Current best:", best_known)

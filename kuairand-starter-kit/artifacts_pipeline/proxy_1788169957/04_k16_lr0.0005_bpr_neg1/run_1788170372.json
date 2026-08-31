@@ -1,0 +1,36 @@
+{
+  "timestamp": "2026-08-31T09:59:32.547272+00:00",
+  "candidate": {
+    "k": 16,
+    "lr": 0.0005,
+    "loss": "bpr",
+    "epochs": 6,
+    "bs": 8192
+  },
+  "per_seed": [
+    {
+      "seed": 0,
+      "valid": {
+        "GAUC": 0.6691140532493591,
+        "nDCG@5": 0.5362979769706726,
+        "primary": 0.6027060151100159,
+        "users": 22377,
+        "rows": 124909
+      },
+      "test": {
+        "GAUC": 0.6649277210235596,
+        "nDCG@5": 0.5315976142883301,
+        "primary": 0.5982626676559448,
+        "users": 23875,
+        "rows": 170588
+      },
+      "model": "artifacts_pipeline\\proxy_1788169957\\04_k16_lr0.0005_bpr_neg1\\model_k16_lr0.0005_bpr_s0_1788170372.npz",
+      "elapsed_s": 45.14492440223694
+    }
+  ],
+  "mean_valid_primary": 0.6027060151100159,
+  "mean_valid_gauc": 0.6691140532493591,
+  "mean_valid_ndcg": 0.5362979769706726,
+  "mean_test_primary": 0.5982626676559448,
+  "elapsed_seconds": 45.21769309043884
+}

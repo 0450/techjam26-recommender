@@ -1,25 +1,25 @@
 [
   {
     "cand": {
-      "k": 32,
-      "lr": 0.001,
-      "loss": "bpr",
-      "neg_per_pos": 1
-    },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\07_k32_lr0.001_bpr_neg1",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\07_k32_lr0.001_bpr_neg1\\run_1788157511.json",
-    "mean_valid_primary": 0.6034793853759766
-  },
-  {
-    "cand": {
       "k": 16,
       "lr": 0.001,
       "loss": "bpr",
       "neg_per_pos": 1
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\01_k16_lr0.001_bpr_neg1",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\01_k16_lr0.001_bpr_neg1\\run_1788156888.json",
-    "mean_valid_primary": 0.6032581329345703
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\01_k16_lr0.001_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\01_k16_lr0.001_bpr_neg1\\run_1788170060.json",
+    "mean_valid_primary": 0.6040538549423218
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.001,
+      "loss": "bpr",
+      "neg_per_pos": 1
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\07_k32_lr0.001_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\07_k32_lr0.001_bpr_neg1\\run_1788170628.json",
+    "mean_valid_primary": 0.6039974093437195
   },
   {
     "cand": {
@@ -28,9 +28,9 @@
       "loss": "bpr",
       "neg_per_pos": 1
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\10_k32_lr0.0005_bpr_neg1",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\10_k32_lr0.0005_bpr_neg1\\run_1788157721.json",
-    "mean_valid_primary": 0.6030669212341309
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\10_k32_lr0.0005_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\10_k32_lr0.0005_bpr_neg1\\run_1788170948.json",
+    "mean_valid_primary": 0.6035293340682983
   },
   {
     "cand": {
@@ -39,9 +39,9 @@
       "loss": "bpr",
       "neg_per_pos": 1
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\04_k16_lr0.0005_bpr_neg1",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\04_k16_lr0.0005_bpr_neg1\\run_1788157235.json",
-    "mean_valid_primary": 0.6027525663375854
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\04_k16_lr0.0005_bpr_neg1",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\04_k16_lr0.0005_bpr_neg1\\run_1788170372.json",
+    "mean_valid_primary": 0.6027060151100159
   },
   {
     "cand": {
@@ -50,39 +50,9 @@
       "loss": "bpr",
       "neg_per_pos": 3
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\08_k32_lr0.001_bpr_neg3",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\08_k32_lr0.001_bpr_neg3\\run_1788157611.json",
-    "mean_valid_primary": 0.6012212634086609
-  },
-  {
-    "cand": {
-      "k": 16,
-      "lr": 0.001,
-      "loss": "pointwise"
-    },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\00_k16_lr0.001_pointwise",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\00_k16_lr0.001_pointwise\\run_1788156805.json",
-    "mean_valid_primary": 0.601046085357666
-  },
-  {
-    "cand": {
-      "k": 32,
-      "lr": 0.001,
-      "loss": "pointwise"
-    },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\06_k32_lr0.001_pointwise",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\06_k32_lr0.001_pointwise\\run_1788157456.json",
-    "mean_valid_primary": 0.6009080410003662
-  },
-  {
-    "cand": {
-      "k": 32,
-      "lr": 0.0005,
-      "loss": "pointwise"
-    },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\09_k32_lr0.0005_pointwise",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\09_k32_lr0.0005_pointwise\\run_1788157665.json",
-    "mean_valid_primary": 0.6006664633750916
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\08_k32_lr0.001_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\08_k32_lr0.001_bpr_neg3\\run_1788170800.json",
+    "mean_valid_primary": 0.602307915687561
   },
   {
     "cand": {
@@ -91,9 +61,39 @@
       "loss": "bpr",
       "neg_per_pos": 3
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\02_k16_lr0.001_bpr_neg3",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\02_k16_lr0.001_bpr_neg3\\run_1788157090.json",
-    "mean_valid_primary": 0.599694550037384
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\02_k16_lr0.001_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\02_k16_lr0.001_bpr_neg3\\run_1788170258.json",
+    "mean_valid_primary": 0.6018298268318176
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.0005,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\09_k32_lr0.0005_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\09_k32_lr0.0005_pointwise\\run_1788170882.json",
+    "mean_valid_primary": 0.6017244458198547
+  },
+  {
+    "cand": {
+      "k": 16,
+      "lr": 0.001,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\00_k16_lr0.001_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\00_k16_lr0.001_pointwise\\run_1788170013.json",
+    "mean_valid_primary": 0.6015127897262573
+  },
+  {
+    "cand": {
+      "k": 32,
+      "lr": 0.001,
+      "loss": "pointwise"
+    },
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\06_k32_lr0.001_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\06_k32_lr0.001_pointwise\\run_1788170534.json",
+    "mean_valid_primary": 0.601294994354248
   },
   {
     "cand": {
@@ -101,9 +101,9 @@
       "lr": 0.0005,
       "loss": "pointwise"
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\03_k16_lr0.0005_pointwise",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\03_k16_lr0.0005_pointwise\\run_1788157145.json",
-    "mean_valid_primary": 0.5994711518287659
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\03_k16_lr0.0005_pointwise",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\03_k16_lr0.0005_pointwise\\run_1788170316.json",
+    "mean_valid_primary": 0.6010503172874451
   },
   {
     "cand": {
@@ -112,9 +112,9 @@
       "loss": "bpr",
       "neg_per_pos": 3
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\11_k32_lr0.0005_bpr_neg3",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\11_k32_lr0.0005_bpr_neg3\\run_1788157943.json",
-    "mean_valid_primary": 0.5930352210998535
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\11_k32_lr0.0005_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\11_k32_lr0.0005_bpr_neg3\\run_1788171073.json",
+    "mean_valid_primary": 0.5993105173110962
   },
   {
     "cand": {
@@ -123,8 +123,8 @@
       "loss": "bpr",
       "neg_per_pos": 3
     },
-    "outdir": "artifacts_pipeline\\proxy_1788156769\\05_k16_lr0.0005_bpr_neg3",
-    "run_json": "artifacts_pipeline\\proxy_1788156769\\05_k16_lr0.0005_bpr_neg3\\run_1788157400.json",
-    "mean_valid_primary": 0.5847346186637878
+    "outdir": "artifacts_pipeline\\proxy_1788169957\\05_k16_lr0.0005_bpr_neg3",
+    "run_json": "artifacts_pipeline\\proxy_1788169957\\05_k16_lr0.0005_bpr_neg3\\run_1788170458.json",
+    "mean_valid_primary": 0.5962469577789307
   }
 ]
