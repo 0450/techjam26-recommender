@@ -114,7 +114,7 @@ class AutonomousResearchAgent:
             import pandas as pd
             from sklearn.preprocessing import OrdinalEncoder
 
-            print("[Data Engine] Parsing interaction logs & feature tables (including statistical features)...")
+            print("[Data Engine] Parsing interaction logs & feature tables...")
 
             df_train = pd.read_csv(raw_train)
             df_val = pd.read_csv(raw_val)
@@ -123,46 +123,61 @@ class AutonomousResearchAgent:
 
             target_col = "is_click" if "is_click" in df_train.columns else ("click" if "click" in df_train.columns else df_train.columns[-1])
 
+            # Standardize join key data types
+            for df in [df_train, df_val, df_test]:
+                if "user_id" in df.columns:
+                    df["user_id"] = df["user_id"].astype(str)
+                if "video_id" in df.columns:
+                    df["video_id"] = df["video_id"].astype(str)
+
             user_feat_path = os.path.join(self.data_dir, "user_features_pure.csv")
             video_basic_path = os.path.join(self.data_dir, "video_features_basic_pure.csv")
             video_stat_path = os.path.join(self.data_dir, "video_features_statistic_pure.csv")
 
-            feature_cols = [c for c in ["user_id", "video_id"] if c in df_train.columns]
-
             if os.path.exists(user_feat_path):
                 df_user = pd.read_csv(user_feat_path)
-                u_cols = [c for c in df_user.columns if c != "user_id"]
-                df_train = df_train.merge(df_user, on="user_id", how="left")
-                df_val = df_val.merge(df_user, on="user_id", how="left")
-                df_test = df_test.merge(df_user, on="user_id", how="left")
-                feature_cols.extend(u_cols)
+                df_user["user_id"] = df_user["user_id"].astype(str)
+                df_train = df_train.merge(df_user, on="user_id", how="left", suffixes=('', '_dup'))
+                df_val = df_val.merge(df_user, on="user_id", how="left", suffixes=('', '_dup'))
+                df_test = df_test.merge(df_user, on="user_id", how="left", suffixes=('', '_dup'))
 
             if os.path.exists(video_basic_path):
                 df_video_basic = pd.read_csv(video_basic_path)
-                vb_cols = [c for c in df_video_basic.columns if c != "video_id"]
-                df_train = df_train.merge(df_video_basic, on="video_id", how="left")
-                df_val = df_val.merge(df_video_basic, on="video_id", how="left")
-                df_test = df_test.merge(df_video_basic, on="video_id", how="left")
-                feature_cols.extend(vb_cols)
+                df_video_basic["video_id"] = df_video_basic["video_id"].astype(str)
+                df_train = df_train.merge(df_video_basic, on="video_id", how="left", suffixes=('', '_dup'))
+                df_val = df_val.merge(df_video_basic, on="video_id", how="left", suffixes=('', '_dup'))
+                df_test = df_test.merge(df_video_basic, on="video_id", how="left", suffixes=('', '_dup'))
 
             if os.path.exists(video_stat_path):
                 df_video_stat = pd.read_csv(video_stat_path)
-                vs_cols = [c for c in df_video_stat.columns if c != "video_id"]
-                df_train = df_train.merge(df_video_stat, on="video_id", how="left")
-                df_val = df_val.merge(df_video_stat, on="video_id", how="left")
-                df_test = df_test.merge(df_video_stat, on="video_id", how="left")
-                feature_cols.extend(vs_cols)
+                df_video_stat["video_id"] = df_video_stat["video_id"].astype(str)
+                df_train = df_train.merge(df_video_stat, on="video_id", how="left", suffixes=('', '_dup'))
+                df_val = df_val.merge(df_video_stat, on="video_id", how="left", suffixes=('', '_dup'))
+                df_test = df_test.merge(df_video_stat, on="video_id", how="left", suffixes=('', '_dup'))
 
-            feature_cols = list(dict.fromkeys(feature_cols))
+            # Clean duplicate suffix columns created by merges
+            for df in [df_train, df_val, df_test]:
+                dup_cols = [c for c in df.columns if c.endswith('_dup')]
+                if dup_cols:
+                    df.drop(columns=dup_cols, inplace=True)
+
+            # Select common feature columns present across train, val, and test
+            exclude_cols = {target_col, "target", "label", "is_click", "click", "date", "time", "timestamp"}
+            feature_cols = [c for c in df_train.columns if c in df_val.columns and c in df_test.columns and c not in exclude_cols]
 
             print(f"[Data Engine] Preprocessing {len(feature_cols)} feature columns (Quantile Binning continuous statistics)...")
-            
+
             combined_features = pd.concat([df_train[feature_cols], df_val[feature_cols], df_test[feature_cols]], axis=0)
 
-            # Quantile binning for numerical/continuous columns
-            for col in combined_features.select_dtypes(include=[np.number]).columns:
+            # Quantile binning for continuous numerical columns
+            for col in combined_features.columns:
                 if col not in ["user_id", "video_id"]:
-                    combined_features[col] = pd.qcut(combined_features[col], q=10, labels=False, duplicates="drop")
+                    if pd.api.types.is_numeric_dtype(combined_features[col]):
+                        if combined_features[col].nunique() > 10:
+                            try:
+                                combined_features[col] = pd.qcut(combined_features[col], q=10, labels=False, duplicates="drop")
+                            except Exception:
+                                pass
 
             combined_str = combined_features.astype(str).fillna("-1")
 
@@ -245,7 +260,6 @@ class AutonomousResearchAgent:
             num_seeds=3
         )
 
-        # Save submission probabilities
         if "test_preds" in ensemble_results:
             import pandas as pd
             sub_df = pd.DataFrame()
