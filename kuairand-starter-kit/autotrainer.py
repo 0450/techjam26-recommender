@@ -5,8 +5,8 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
-from sklearn.metrics import roc_auc_score, log_loss
 
+from evaluate import evaluate
 from utils import clear_memory
 
 # --------------------------------------------------
@@ -86,12 +86,12 @@ class RecommenderModel(nn.Module):
         return self.sigmoid(logits).squeeze(-1)
 
 # --------------------------------------------------
-# Training Engine with Restored Timers
+# Training Engine with Official Evaluation Metrics
 # --------------------------------------------------
 
 def train_single_seed(cfg: dict, data_enc: dict, num_features: int, seed: int = 42, 
                       max_epochs: int = 30, patience: int = 4):
-    """Trains a single model instance up to full convergence with epoch timer logging."""
+    """Trains a single model instance evaluated with official GAUC / nDCG@5 metrics."""
     torch.manual_seed(seed)
     np.random.seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -102,9 +102,9 @@ def train_single_seed(cfg: dict, data_enc: dict, num_features: int, seed: int = 
     val_ds = TensorDataset(torch.tensor(data_enc["X_val"], dtype=torch.long), torch.tensor(data_enc["y_val"], dtype=torch.float32))
     test_ds = TensorDataset(torch.tensor(data_enc["X_test"], dtype=torch.long), torch.tensor(data_enc["y_test"], dtype=torch.float32))
 
-    train_loader = DataLoader(train_ds, batch_size=cfg.get("batch_size", 4096), shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=8192, shuffle=False)
-    test_loader = DataLoader(test_ds, batch_size=8192, shuffle=False)
+    train_loader = DataLoader(train_ds, batch_size=cfg.get("batch_size", 8192), shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=16384, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=16384, shuffle=False)
 
     model = RecommenderModel(
         num_features=num_features,
@@ -122,6 +122,9 @@ def train_single_seed(cfg: dict, data_enc: dict, num_features: int, seed: int = 
     patience_counter = 0
     best_model_state = None
 
+    val_users = data_enc["users_val"]
+    val_targets = data_enc["y_val"]
+
     for epoch in range(1, max_epochs + 1):
         t0 = time.time()
         model.train()
@@ -135,26 +138,25 @@ def train_single_seed(cfg: dict, data_enc: dict, num_features: int, seed: int = 
             optimizer.step()
             train_loss += loss.item() * len(y_b)
 
-        # Validation
+        # Official Validation Evaluation
         model.eval()
-        val_preds, val_targets = [], []
+        val_preds = []
         with torch.no_grad():
-            for x_b, y_b in val_loader:
-                x_b = x_b.to(device)
-                preds = model(x_b)
+            for x_b, _ in val_loader:
+                preds = model(x_b.to(device))
                 val_preds.extend(preds.cpu().numpy())
-                val_targets.extend(y_b.numpy())
 
         elapsed = time.time() - t0
-        val_loss = log_loss(val_targets, val_preds)
-        val_auc = roc_auc_score(val_targets, val_preds)
-        val_primary = val_auc - (0.5 * val_loss)
+        eval_res = evaluate(val_users, val_targets, val_preds)
+        val_gauc = eval_res["GAUC"]
+        val_ndcg = eval_res["nDCG@5"]
+        val_primary = eval_res["primary"]
         train_loss_avg = train_loss / len(train_ds)
 
-        is_best = val_primary > best_val_primary
+        is_best = val_primary > best_val_primary + 1e-5
         best_tag = " [BEST]" if is_best else ""
 
-        print(f"  Epoch {epoch:02d}/{max_epochs:02d} | Loss: {train_loss_avg:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | Val Primary: {val_primary:.4f} | Time: {elapsed:.1f}s{best_tag}")
+        print(f"  Epoch {epoch:02d}/{max_epochs:02d} | Loss: {train_loss_avg:.4f} | Val GAUC: {val_gauc:.4f} | Val nDCG@5: {val_ndcg:.4f} | Val Primary: {val_primary:.4f} | Time: {elapsed:.1f}s{best_tag}")
 
         if is_best:
             best_val_primary = val_primary
@@ -178,11 +180,11 @@ def train_single_seed(cfg: dict, data_enc: dict, num_features: int, seed: int = 
             test_preds.extend(model(x_b.to(device)).cpu().numpy())
 
     clear_memory()
-    return model, np.array(val_preds), np.array(test_preds)
+    return model, np.array(val_preds, dtype=np.float32), np.array(test_preds, dtype=np.float32)
 
 
 def train_and_eval(cfg: dict, data_enc: dict, num_features: int) -> dict:
-    """Stage 1 trial evaluation helper running quick epochs for feature signal."""
+    """Stage 1 trial evaluation helper running quick epochs against official metrics."""
     quick_epochs = cfg.get("quick_epochs", 10)
     _, val_preds, _ = train_single_seed(
         cfg=cfg,
@@ -192,15 +194,11 @@ def train_and_eval(cfg: dict, data_enc: dict, num_features: int) -> dict:
         max_epochs=quick_epochs,
         patience=3
     )
-    val_targets = data_enc["y_val"]
-    auc = roc_auc_score(val_targets, val_preds)
-    loss = log_loss(val_targets, val_preds)
-    primary = auc - (0.5 * loss)
-
+    eval_res = evaluate(data_enc["users_val"], data_enc["y_val"], val_preds)
     return {
-        "val_auc": float(auc),
-        "val_loss": float(loss),
-        "primary": float(primary)
+        "val_auc": float(eval_res["GAUC"]),
+        "val_ndcg": float(eval_res["nDCG@5"]),
+        "primary": float(eval_res["primary"])
     }
 
 
@@ -231,22 +229,19 @@ def run_full_ensemble_and_blend(best_configs: list, data_enc: dict, num_features
     final_val_preds = np.mean(val_preds_all, axis=0)
     final_test_preds = np.mean(test_preds_all, axis=0)
 
-    val_targets = data_enc["y_val"]
-    ensemble_auc = roc_auc_score(val_targets, final_val_preds)
-    ensemble_loss = log_loss(val_targets, final_val_preds)
-    ensemble_primary = ensemble_auc - (0.5 * ensemble_loss)
+    val_res = evaluate(data_enc["users_val"], data_enc["y_val"], final_val_preds)
 
     print("\n=======================================================")
     print(f"  STAGE 2 FINAL ENSEMBLE RESULTS")
-    print(f"  Ensemble Val AUC   : {ensemble_auc:.4f}")
-    print(f"  Ensemble Val Loss  : {ensemble_loss:.4f}")
-    print(f"  Ensemble Primary   : {ensemble_primary:.4f}")
+    print(f"  Ensemble Val GAUC  : {val_res['GAUC']:.4f}")
+    print(f"  Ensemble Val nDCG@5: {val_res['nDCG@5']:.4f}")
+    print(f"  Ensemble Primary   : {val_res['primary']:.4f}")
     print("=======================================================")
 
     return {
-        "val_auc": float(ensemble_auc),
-        "val_loss": float(ensemble_loss),
-        "primary": float(ensemble_primary),
+        "val_auc": float(val_res["GAUC"]),
+        "val_ndcg": float(val_res["nDCG@5"]),
+        "primary": float(val_res["primary"]),
         "val_preds": final_val_preds,
         "test_preds": final_test_preds
     }

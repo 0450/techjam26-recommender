@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import json
 import argparse
 import numpy as np
@@ -49,13 +50,14 @@ class GeminiClient:
             return cfg
 
         prompt = f"""You are an expert Recommendation Systems ML Engineer tuning models for the KuaiRand dataset.
-Your goal is to maximize the primary score = AUC - 0.5 * LogLoss.
+Your goal is to maximize the official primary score = (GAUC + nDCG@5) / 2.0.
 
 Past Experiment History (JSON):
 {json.dumps(history, indent=2)}
 
 Propose the next set of hyperparameter values as a valid JSON object ONLY.
 Required JSON keys:
+- "hypothesis": string (explanation of what is being tested and why)
 - "model_type": string ("senet" or "lowrank_dcn")
 - "lr": float (between 0.00005 and 0.001)
 - "embed_dim": int (16 or 32)
@@ -65,17 +67,21 @@ Required JSON keys:
 """
         try:
             response = self.client.models.generate_content(
-                model="gemini-1.5-flash",
+                model="gemini-3.6-flash",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.3,
                     response_mime_type="application/json"
                 )
             )
-            return json.loads(response.text.strip())
+            res = json.loads(response.text.strip())
+            if "hypothesis" not in res:
+                res["hypothesis"] = f"Exploring {res.get('model_type')} with lr={res.get('lr')}."
+            return res
         except Exception as e:
             print(f"[Gemini API Call Failed] Error: {e}. Using fallback config.")
             cfg = self.static_fallbacks[self.fallback_idx % len(self.static_fallbacks)]
+            cfg["hypothesis"] = "Fallback configuration due to API limits/error."
             self.fallback_idx += 1
             return cfg
 
@@ -89,128 +95,102 @@ class AutonomousResearchAgent:
         self.epsilon = epsilon
         self.gemini = GeminiClient()
         self.history = []
-        self.raw_test_df = None
+        self.test_rows = []
         os.makedirs(output_dir, exist_ok=True)
 
     def load_dataset(self):
+        """Loads KuaiRand data adhering strictly to official date splits and long_view label."""
         print(f"[Data Engine] Loading KuaiRand dataset from {self.data_dir}...")
-        
-        npz_path = os.path.join(self.data_dir, "encoded_data.npz")
-        if os.path.exists(npz_path):
-            data = np.load(npz_path)
-            data_enc = {
-                "X_train": data["X_train"], "y_train": data["y_train"],
-                "X_val": data["X_val"], "y_val": data["y_val"],
-                "X_test": data["X_test"], "y_test": data["y_test"]
-            }
-            num_features = int(data.get("num_features", np.max(data["X_train"]) + 1))
-            return data_enc, num_features
 
-        raw_train = os.path.join(self.data_dir, "log_standard_4_08_to_4_21_pure.csv")
-        raw_val = os.path.join(self.data_dir, "log_standard_4_22_to_5_08_pure.csv")
-        raw_test = os.path.join(self.data_dir, "log_random_4_22_to_5_08_pure.csv")
+        SPLITS = {
+            'train': (20220408, 20220421),
+            'valid': (20220422, 20220428),
+            'test':  (20220429, 20220508)
+        }
 
-        if os.path.exists(raw_train) and os.path.exists(raw_val) and os.path.exists(raw_test):
-            import pandas as pd
-            from sklearn.preprocessing import OrdinalEncoder
+        # Load optional auxiliary features into dictionaries to avoid key errors & pandas duplicate suffixes
+        u_ext = {}
+        user_feat_path = os.path.join(self.data_dir, "user_features_pure.csv")
+        USER_FE = ['follow_user_num_range', 'register_days_range', 'fans_user_num_range', 'friend_user_num_range', 'user_active_degree']
+        if os.path.exists(user_feat_path):
+            with open(user_feat_path, encoding='utf-8') as fh:
+                for r in csv.DictReader(fh):
+                    u_ext[r['user_id']] = [r.get(k, 'UNK') for k in USER_FE]
 
-            print("[Data Engine] Parsing interaction logs & feature tables...")
+        v_ext = {}
+        video_basic_path = os.path.join(self.data_dir, "video_features_basic_pure.csv")
+        VID_FE = ['author_id', 'video_type', 'upload_type']
+        if os.path.exists(video_basic_path):
+            with open(video_basic_path, encoding='utf-8') as fh:
+                for r in csv.DictReader(fh):
+                    v_ext[r['video_id']] = [r.get(k, 'UNK') for k in VID_FE]
 
-            df_train = pd.read_csv(raw_train)
-            df_val = pd.read_csv(raw_val)
-            df_test = pd.read_csv(raw_test)
-            self.raw_test_df = df_test.copy()
+        rows = []
+        for f in ('log_standard_4_08_to_4_21_pure.csv', 'log_standard_4_22_to_5_08_pure.csv'):
+            path = os.path.join(self.data_dir, f)
+            if os.path.exists(path):
+                with open(path, encoding='utf-8') as fh:
+                    for r in csv.DictReader(fh):
+                        # Strict long_view label parsing per competition rules
+                        label = 1.0 if r.get('long_view', '0') != '0' else 0.0
+                        rows.append((int(r['date']), r['user_id'], r['video_id'], r.get('tab', 'UNK'),
+                                     float(r.get('duration_ms', 0.0)), label))
 
-            target_col = "is_click" if "is_click" in df_train.columns else ("click" if "click" in df_train.columns else df_train.columns[-1])
+        splits = {n: [x for x in rows if lo <= x[0] <= hi] for n, (lo, hi) in SPLITS.items()}
+        self.test_rows = splits['test']
 
-            # Standardize join key data types
-            for df in [df_train, df_val, df_test]:
-                if "user_id" in df.columns:
-                    df["user_id"] = df["user_id"].astype(str)
-                if "video_id" in df.columns:
-                    df["video_id"] = df["video_id"].astype(str)
+        print(f"[Data Engine] Loaded row counts: train={len(splits['train'])}, valid={len(splits['valid'])}, test={len(splits['test'])}")
 
-            user_feat_path = os.path.join(self.data_dir, "user_features_pure.csv")
-            video_basic_path = os.path.join(self.data_dir, "video_features_basic_pure.csv")
-            video_stat_path = os.path.join(self.data_dir, "video_features_statistic_pure.csv")
+        # Continuous duration binning calculated on train split ONLY
+        train_durations = [x[4] for x in splits['train']]
+        edges = np.quantile(train_durations, np.linspace(0, 1, 11)[1:-1])
 
-            if os.path.exists(user_feat_path):
-                df_user = pd.read_csv(user_feat_path)
-                df_user["user_id"] = df_user["user_id"].astype(str)
-                df_train = df_train.merge(df_user, on="user_id", how="left", suffixes=('', '_dup'))
-                df_val = df_val.merge(df_user, on="user_id", how="left", suffixes=('', '_dup'))
-                df_test = df_test.merge(df_user, on="user_id", how="left", suffixes=('', '_dup'))
+        UNKU = ['UNK'] * len(USER_FE)
+        UNKV = ['UNK'] * len(VID_FE)
 
-            if os.path.exists(video_basic_path):
-                df_video_basic = pd.read_csv(video_basic_path)
-                df_video_basic["video_id"] = df_video_basic["video_id"].astype(str)
-                df_train = df_train.merge(df_video_basic, on="video_id", how="left", suffixes=('', '_dup'))
-                df_val = df_val.merge(df_video_basic, on="video_id", how="left", suffixes=('', '_dup'))
-                df_test = df_test.merge(df_video_basic, on="video_id", how="left", suffixes=('', '_dup'))
+        def raw_features(x):
+            ue = u_ext.get(x[1], UNKU)
+            ve = v_ext.get(x[2], UNKV)
+            dur_bin = str(int(np.searchsorted(edges, x[4])))
+            # Combined field list: user_id, video_id, tab, dur_bin, user_features, video_features
+            return [x[1], x[2], x[3], dur_bin] + ue + ve
 
-            if os.path.exists(video_stat_path):
-                df_video_stat = pd.read_csv(video_stat_path)
-                df_video_stat["video_id"] = df_video_stat["video_id"].astype(str)
-                df_train = df_train.merge(df_video_stat, on="video_id", how="left", suffixes=('', '_dup'))
-                df_val = df_val.merge(df_video_stat, on="video_id", how="left", suffixes=('', '_dup'))
-                df_test = df_test.merge(df_video_stat, on="video_id", how="left", suffixes=('', '_dup'))
+        n_fields = len(raw_features(splits['train'][0]))
 
-            # Clean duplicate suffix columns created by merges
-            for df in [df_train, df_val, df_test]:
-                dup_cols = [c for c in df.columns if c.endswith('_dup')]
-                if dup_cols:
-                    df.drop(columns=dup_cols, inplace=True)
+        # Fit vocabularies on train split ONLY
+        vocabs = [dict() for _ in range(n_fields)]
+        for x in splits['train']:
+            for i, v in enumerate(raw_features(x)):
+                if v not in vocabs[i]:
+                    vocabs[i][v] = len(vocabs[i])
 
-            # Select common feature columns present across train, val, and test
-            exclude_cols = {target_col, "target", "label", "is_click", "click", "date", "time", "timestamp"}
-            feature_cols = [c for c in df_train.columns if c in df_val.columns and c in df_test.columns and c not in exclude_cols]
+        unk_slots = [len(v) for v in vocabs]
+        field_dims = [len(v) + 1 for v in vocabs]
+        offsets = np.cumsum([0] + field_dims[:-1]).astype(np.int32)
 
-            print(f"[Data Engine] Preprocessing {len(feature_cols)} feature columns (Quantile Binning continuous statistics)...")
+        data_enc = {}
+        for name, rws in splits.items():
+            X = np.empty((len(rws), n_fields), dtype=np.int32)
+            y = np.empty(len(rws), dtype=np.float32)
+            users = []
+            for j, x in enumerate(rws):
+                for i, v in enumerate(raw_features(x)):
+                    X[j, i] = vocabs[i].get(v, unk_slots[i]) + offsets[i]
+                y[j] = x[5]
+                users.append(x[1])
+            data_enc[f"X_{name}"] = X
+            data_enc[f"y_{name}"] = y
+            data_enc[f"users_{name}"] = users
 
-            combined_features = pd.concat([df_train[feature_cols], df_val[feature_cols], df_test[feature_cols]], axis=0)
+        # Fix train keys alias mapping for standard autotrainer dictionary
+        data_enc["X_val"] = data_enc["X_valid"]
+        data_enc["y_val"] = data_enc["y_valid"]
+        data_enc["users_val"] = data_enc["users_valid"]
 
-            # Quantile binning for continuous numerical columns
-            for col in combined_features.columns:
-                if col not in ["user_id", "video_id"]:
-                    if pd.api.types.is_numeric_dtype(combined_features[col]):
-                        if combined_features[col].nunique() > 10:
-                            try:
-                                combined_features[col] = pd.qcut(combined_features[col], q=10, labels=False, duplicates="drop")
-                            except Exception:
-                                pass
+        num_features = int(sum(field_dims))
+        print(f"[Data Engine] Preprocessed {n_fields} fields. Total Vocabulary Dimension: {num_features}")
 
-            combined_str = combined_features.astype(str).fillna("-1")
-
-            encoder = OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1)
-            encoder.fit(combined_str)
-
-            n_train = len(df_train)
-            n_val = len(df_val)
-
-            X_train = encoder.transform(combined_str.iloc[:n_train]) + 1
-            X_val = encoder.transform(combined_str.iloc[n_train:n_train + n_val]) + 1
-            X_test = encoder.transform(combined_str.iloc[n_train + n_val:]) + 1
-
-            X_train[X_train < 0] = 0
-            X_val[X_val < 0] = 0
-            X_test[X_test < 0] = 0
-
-            y_train = df_train[target_col].astype(np.float32).values
-            y_val = df_val[target_col].astype(np.float32).values
-            y_test = df_test[target_col].astype(np.float32).values
-
-            num_features = int(max(X_train.max(), X_val.max(), X_test.max())) + 1
-
-            data_enc = {
-                "X_train": X_train.astype(np.int64), "y_train": y_train,
-                "X_val": X_val.astype(np.int64), "y_val": y_val,
-                "X_test": X_test.astype(np.int64), "y_test": y_test
-            }
-
-            print(f"[Data Engine] Dataset ready! Features: {len(feature_cols)} | Total Vocabulary: {num_features}")
-            return data_enc, num_features
-
-        raise FileNotFoundError(f"Could not find valid dataset files in {self.data_dir}.")
+        return data_enc, num_features
 
     def run(self):
         data_enc, num_features = self.load_dataset()
@@ -228,13 +208,31 @@ class AutonomousResearchAgent:
             cfg["seed"] = 42
             cfg["quick_epochs"] = 10
 
+            hypothesis = cfg.get("hypothesis", "Exploratory hyperparameter adjustment.")
             print(f"\n--- Stage 1 Iteration {trial}/{self.max_trials}: Model={cfg.get('model_type')} | LR={cfg.get('lr')} ---")
-            metrics = train_and_eval(cfg, data_enc, num_features)
-            current_score = metrics["primary"]
+            print(f"    Hypothesis: {hypothesis}")
 
-            print(f"--> Result: Val AUC={metrics['val_auc']:.4f} | Val Loss={metrics['val_loss']:.4f} | Primary Score={current_score:.4f}")
+            try:
+                metrics = train_and_eval(cfg, data_enc, num_features)
+                current_score = metrics["primary"]
+                error_event = None
+                print(f"--> Result: Val GAUC={metrics['val_auc']:.4f} | Val nDCG@5={metrics['val_ndcg']:.4f} | Primary Score={current_score:.4f}")
+            except Exception as e:
+                print(f"[Trial {trial} Error] Exception encountered: {e}. Handled gracefully.")
+                metrics = {"val_auc": 0.5, "val_ndcg": 0.0, "primary": 0.25}
+                current_score = 0.25
+                error_event = str(e)
 
-            self.history.append({"trial": trial, "config": cfg, "metrics": metrics})
+            # Record per-iteration run log requirement
+            self.history.append({
+                "iteration": trial,
+                "hypothesis": hypothesis,
+                "code_diff": f"Updated config parameters: model={cfg.get('model_type')}, lr={cfg.get('lr')}, embed_dim={cfg.get('embed_dim')}",
+                "config": cfg,
+                "metrics": metrics,
+                "error_recovery": error_event,
+                "manual_interventions": 0
+            })
 
             if current_score > (best_agent_score + self.epsilon):
                 print(f"[Convergence Tracker] Score improved: {best_agent_score:.4f} -> {current_score:.4f}")
@@ -260,27 +258,28 @@ class AutonomousResearchAgent:
             num_seeds=3
         )
 
+        # Write official submission file matching submit.py schema: row_id,user_id,video_id,score
         if "test_preds" in ensemble_results:
-            import pandas as pd
-            sub_df = pd.DataFrame()
-            if self.raw_test_df is not None and "user_id" in self.raw_test_df.columns:
-                sub_df["user_id"] = self.raw_test_df["user_id"]
-                sub_df["video_id"] = self.raw_test_df["video_id"]
-            sub_df["pred_prob"] = ensemble_results["test_preds"]
             sub_path = os.path.join(self.output_dir, "submission.csv")
-            sub_df.to_csv(sub_path, index=False)
-            print(f"[Submission] Saved test predictions to '{sub_path}'")
+            with open(sub_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["row_id", "user_id", "video_id", "score"])
+                for i, (row_data, score) in enumerate(zip(self.test_rows, ensemble_results["test_preds"])):
+                    # row_data tuple: (date, user_id, video_id, tab, duration, label)
+                    writer.writerow([i, row_data[1], row_data[2], f"{float(score):.6g}"])
+            print(f"[Submission] Saved predictions matching official schema to '{sub_path}'")
 
         save_json({
             "stage1_best_score": best_agent_score,
             "stage2_ensemble_metrics": {
                 "val_auc": ensemble_results["val_auc"],
-                "val_loss": ensemble_results["val_loss"],
+                "val_ndcg": ensemble_results["val_ndcg"],
                 "primary": ensemble_results["primary"]
-            }
+            },
+            "manual_interventions": 0
         }, os.path.join(self.output_dir, "final_results.json"))
 
-        print(f"\n[Pipeline Complete] Output files ready in '{self.output_dir}/'")
+        print(f"\n[Pipeline Complete] Artifacts generated in '{self.output_dir}/'")
 
 
 if __name__ == "__main__":

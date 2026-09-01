@@ -6,9 +6,9 @@ import torch
 class NpEncoder(json.JSONEncoder):
     """Custom JSON encoder for NumPy data types."""
     def default(self, obj):
-        if isinstance(obj, np.integer):
+        if isinstance(obj, (np.integer, int)):
             return int(obj)
-        if isinstance(obj, np.floating):
+        if isinstance(obj, (np.floating, float)):
             return float(obj)
         if isinstance(obj, np.ndarray):
             return obj.tolist()
