@@ -1,124 +1,252 @@
-"""
-autotrainer.py
---------------
-Main orchestrator for multi-seed heterogeneous model training, blending,
-prediction validation, submission writing, and champion promotion.
-"""
-
 import os
-import argparse
 import time
-import subprocess
-import json
 import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
+import numpy as np
+from sklearn.metrics import roc_auc_score, log_loss
 
-from data import load, encode
-from submit import write_submission, read_submission
-from utils import (
-    mkdir, save_json, load_auxiliary_targets,
-    train_architecture, optimize_blend, safety_checks
-)
+from utils import clear_memory
+
+# --------------------------------------------------
+# Neural Model Architecture Components
+# --------------------------------------------------
+
+class SENetLayer(nn.Module):
+    """Squeeze-and-Excitation Layer for Deep Recommendation Features."""
+    def __init__(self, num_fields: int, reduction_ratio: int = 3):
+        super(SENetLayer, self).__init__()
+        reduced_dim = max(1, num_fields // reduction_ratio)
+        self.fc = nn.Sequential(
+            nn.Linear(num_fields, reduced_dim, bias=False),
+            nn.ReLU(),
+            nn.Linear(reduced_dim, num_fields, bias=False),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        squeeze = torch.mean(x, dim=-1)
+        w = self.fc(squeeze).unsqueeze(-1)
+        return x * w
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Heterogeneous Automated Recommender Trainer & Blender")
-    parser.add_argument("--data-dir", type=str, default="./KuaiRand-Pure/data", help="Path to data directory")
-    parser.add_argument("--out-dir", type=str, default="artifacts", help="Output directory for predictions and logs")
-    parser.add_argument("--epochs", type=int, default=12, help="Max training epochs per seed")
-    parser.add_argument("--patience", type=int, default=3, help="Early stopping patience")
-    parser.add_argument("--batch-size", type=int, default=8192, help="Training batch size")
-    parser.add_argument("--seeds", type=str, default="42,1024,2026,7,999", help="Comma-separated seed integers")
-    parser.add_argument("--epsilon", type=float, default=0.001, help="Score improvement threshold for champion promotion")
-    args = parser.parse_args()
+class LowRankDCNLayer(nn.Module):
+    """Low-Rank Deep & Cross Network (DCN-v2) Layer."""
+    def __init__(self, input_dim: int, rank: int = 16):
+        super(LowRankDCNLayer, self).__init__()
+        self.u = nn.Linear(input_dim, rank, bias=False)
+        self.v = nn.Linear(rank, input_dim, bias=True)
 
-    mkdir(args.out_dir)
-    seeds = [int(s) for s in args.seeds.split(",")]
+    def forward(self, x0: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+        out = self.v(self.u(x))
+        return x0 * out + x
+
+
+class RecommenderModel(nn.Module):
+    """Unified Recommender Architecture supporting SENet and Low-Rank DCN."""
+    def __init__(self, num_features: int, num_fields: int, embed_dim: int, architecture: str, 
+                 hidden_dims: list, dropout: float = 0.2, dcn_rank: int = 16):
+        super(RecommenderModel, self).__init__()
+        self.architecture = architecture.lower()
+        self.embeddings = nn.Embedding(num_features + 1, embed_dim, padding_idx=0)
+        
+        total_embed_dim = num_fields * embed_dim
+        
+        if self.architecture == "senet":
+            self.senet = SENetLayer(num_fields=num_fields)
+        elif self.architecture == "lowrank_dcn":
+            self.dcn = LowRankDCNLayer(input_dim=total_embed_dim, rank=dcn_rank)
+            
+        layers = []
+        in_dim = total_embed_dim
+        for h_dim in hidden_dims:
+            layers.append(nn.Linear(in_dim, h_dim))
+            layers.append(nn.BatchNorm1d(h_dim))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            in_dim = h_dim
+        layers.append(nn.Linear(in_dim, 1))
+        
+        self.mlp = nn.Sequential(*layers)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x_cat: torch.Tensor) -> torch.Tensor:
+        embeds = self.embeddings(x_cat)  # [batch, num_fields, embed_dim]
+        
+        if self.architecture == "senet":
+            embeds = self.senet(embeds)
+            
+        flat_embeds = embeds.view(embeds.size(0), -1)
+        
+        if self.architecture == "lowrank_dcn":
+            flat_embeds = self.dcn(flat_embeds, flat_embeds)
+            
+        logits = self.mlp(flat_embeds)
+        return self.sigmoid(logits).squeeze(-1)
+
+# --------------------------------------------------
+# Training Engine with Restored Timers
+# --------------------------------------------------
+
+def train_single_seed(cfg: dict, data_enc: dict, num_features: int, seed: int = 42, 
+                      max_epochs: int = 30, patience: int = 4):
+    """Trains a single model instance up to full convergence with epoch timer logging."""
+    torch.manual_seed(seed)
+    np.random.seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using compute device: {device}")
 
-    print("Loading data splits and auxiliary MTL targets...")
-    splits = load(args.data_dir)
-    enc, num_features = encode(splits)
-    aux_targets = load_auxiliary_targets(args.data_dir, splits)
+    num_fields = data_enc["X_train"].shape[1]
 
-    uva = enc['valid'][2]
-    yva = enc['valid'][1]
+    train_ds = TensorDataset(torch.tensor(data_enc["X_train"], dtype=torch.long), torch.tensor(data_enc["y_train"], dtype=torch.float32))
+    val_ds = TensorDataset(torch.tensor(data_enc["X_val"], dtype=torch.long), torch.tensor(data_enc["y_val"], dtype=torch.float32))
+    test_ds = TensorDataset(torch.tensor(data_enc["X_test"], dtype=torch.long), torch.tensor(data_enc["y_test"], dtype=torch.float32))
 
-    # Train 1st Architecture: Compact SENet DeepFM
-    val_senet, test_senet, _ = train_architecture(
-        'senet', seeds, enc, aux_targets, num_features, device,
-        epochs=args.epochs, batch_size=args.batch_size, patience=args.patience, lr=4e-4
+    train_loader = DataLoader(train_ds, batch_size=cfg.get("batch_size", 4096), shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=8192, shuffle=False)
+    test_loader = DataLoader(test_ds, batch_size=8192, shuffle=False)
+
+    model = RecommenderModel(
+        num_features=num_features,
+        num_fields=num_fields,
+        embed_dim=cfg.get("embed_dim", 16),
+        architecture=cfg.get("model_type", "senet"),
+        hidden_dims=cfg.get("hidden_dims", [128, 64]),
+        dropout=cfg.get("dropout", 0.2)
+    ).to(device)
+
+    criterion = nn.BCELoss()
+    optimizer = optim.AdamW(model.parameters(), lr=cfg.get("lr", 0.001), weight_decay=cfg.get("weight_decay", 1e-4))
+
+    best_val_primary = -float("inf")
+    patience_counter = 0
+    best_model_state = None
+
+    for epoch in range(1, max_epochs + 1):
+        t0 = time.time()
+        model.train()
+        train_loss = 0.0
+        for x_b, y_b in train_loader:
+            x_b, y_b = x_b.to(device), y_b.to(device)
+            optimizer.zero_grad()
+            preds = model(x_b)
+            loss = criterion(preds, y_b)
+            loss.backward()
+            optimizer.step()
+            train_loss += loss.item() * len(y_b)
+
+        # Validation
+        model.eval()
+        val_preds, val_targets = [], []
+        with torch.no_grad():
+            for x_b, y_b in val_loader:
+                x_b = x_b.to(device)
+                preds = model(x_b)
+                val_preds.extend(preds.cpu().numpy())
+                val_targets.extend(y_b.numpy())
+
+        elapsed = time.time() - t0
+        val_loss = log_loss(val_targets, val_preds)
+        val_auc = roc_auc_score(val_targets, val_preds)
+        val_primary = val_auc - (0.5 * val_loss)
+        train_loss_avg = train_loss / len(train_ds)
+
+        is_best = val_primary > best_val_primary
+        best_tag = " [BEST]" if is_best else ""
+
+        print(f"  Epoch {epoch:02d}/{max_epochs:02d} | Loss: {train_loss_avg:.4f} | Val Loss: {val_loss:.4f} | Val AUC: {val_auc:.4f} | Val Primary: {val_primary:.4f} | Time: {elapsed:.1f}s{best_tag}")
+
+        if is_best:
+            best_val_primary = val_primary
+            patience_counter = 0
+            best_model_state = model.state_dict().copy()
+        else:
+            patience_counter += 1
+            if patience_counter >= patience:
+                print(f"  --> Early stopping triggered at epoch {epoch}.")
+                break
+
+    if best_model_state:
+        model.load_state_dict(best_model_state)
+
+    model.eval()
+    val_preds, test_preds = [], []
+    with torch.no_grad():
+        for x_b, _ in val_loader:
+            val_preds.extend(model(x_b.to(device)).cpu().numpy())
+        for x_b, _ in test_loader:
+            test_preds.extend(model(x_b.to(device)).cpu().numpy())
+
+    clear_memory()
+    return model, np.array(val_preds), np.array(test_preds)
+
+
+def train_and_eval(cfg: dict, data_enc: dict, num_features: int) -> dict:
+    """Stage 1 trial evaluation helper running quick epochs for feature signal."""
+    quick_epochs = cfg.get("quick_epochs", 10)
+    _, val_preds, _ = train_single_seed(
+        cfg=cfg,
+        data_enc=data_enc,
+        num_features=num_features,
+        seed=42,
+        max_epochs=quick_epochs,
+        patience=3
     )
+    val_targets = data_enc["y_val"]
+    auc = roc_auc_score(val_targets, val_preds)
+    loss = log_loss(val_targets, val_preds)
+    primary = auc - (0.5 * loss)
 
-    # Train 2nd Architecture: Low-Rank DCNv2 DeepFM
-    val_dcn, test_dcn, _ = train_architecture(
-        'lowrank_dcn', seeds, enc, aux_targets, num_features, device,
-        epochs=args.epochs, batch_size=args.batch_size, patience=args.patience, lr=2e-4
-    )
-
-    # Optimize Power-Rank Blending
-    print("\n" + "=" * 60)
-    print("=== OPTIMIZING HETEROGENEOUS BLEND ON VALIDATION SET ===")
-    print("=" * 60)
-    blended_test_preds, best_val_res, w1, w2, power = optimize_blend(
-        val_senet, val_dcn, test_senet, test_dcn, uva, yva
-    )
-
-    print("\n" + "=" * 60)
-    print("=== FINAL OPTIMAL BLEND METRICS ===")
-    print("=" * 60)
-    print(f"  * SENet DeepFM Weight  : {w1:.2f}")
-    print(f"  * Low-Rank DCNv2 Weight: {w2:.2f}")
-    print(f"  * Optimal Power Exponent: {power:.1f}")
-    print("-" * 60)
-    print(f"  * Blended Val GAUC     : {best_val_res['GAUC']:.4f}")
-    print(f"  * Blended Val nDCG@5   : {best_val_res['nDCG@5']:.4f}")
-    print(f"  * Blended Val Primary  : {best_val_res['primary']:.4f}")
-    print("=" * 60)
-
-    # Validate output predictions
-    safety_checks(blended_test_preds)
-
-    timestamp = int(time.time())
-    sub_path = os.path.join(args.out_dir, f"submission_heterogeneous_{timestamp}.csv")
-    
-    # Save submission using official hackathon write_submission
-    write_submission(sub_path, splits['test'], blended_test_preds)
-    print(f"\nWrote submission: {sub_path}")
-
-    # Validate submission alignment using official submit.py read_submission
-    read_submission(sub_path, splits['test'])
-    print("✓ Format and row-alignment validation passed successfully!")
-
-    # Champion Promotion Tracking
-    champion_file = os.path.join(args.out_dir, "best_metrics.json")
-    best_primary = -1.0
-
-    if os.path.exists(champion_file):
-        with open(champion_file, "r") as f:
-            champion_data = json.load(f)
-            best_primary = champion_data.get("mean_valid_primary", -1.0)
-
-    candidate_primary = best_val_res["primary"]
-    print(f"\nCandidate Primary Score: {candidate_primary:.4f} | Champion Primary Score: {best_primary:.4f}")
-
-    if candidate_primary > best_primary + args.epsilon:
-        print(" Candidate promoted to NEW CHAMPION!")
-        champ_record = {
-            "seeds": seeds,
-            "epochs": args.epochs,
-            "mean_valid_primary": candidate_primary,
-            "valid_metrics": best_val_res,
-            "senet_weight": w1,
-            "dcn_weight": w2,
-            "power_exponent": power,
-            "submission_path": sub_path,
-            "timestamp": timestamp
-        }
-        save_json(champ_record, champion_file)
-    else:
-        print("Candidate score did not exceed champion promotion threshold.")
+    return {
+        "val_auc": float(auc),
+        "val_loss": float(loss),
+        "primary": float(primary)
+    }
 
 
-if __name__ == "__main__":
-    main()
+def run_full_ensemble_and_blend(best_configs: list, data_enc: dict, num_features: int, num_seeds: int = 3) -> dict:
+    """Stage 2: Runs multi-seed full training across top configurations and blends predictions."""
+    print("\n=======================================================")
+    print(f"  STARTING STAGE 2: FULL ENSEMBLE ({len(best_configs)} Configs x {num_seeds} Seeds)")
+    print("=======================================================")
+
+    val_preds_all = []
+    test_preds_all = []
+    seeds = [42, 1024, 2026][:num_seeds]
+
+    for c_idx, cfg in enumerate(best_configs, 1):
+        for s_idx, seed in enumerate(seeds, 1):
+            print(f"\n--- Training Model Config {c_idx}/{len(best_configs)} ({cfg['model_type']}) | Seed {s_idx}/{num_seeds} (ID: {seed}) ---")
+            _, v_p, t_p = train_single_seed(
+                cfg=cfg,
+                data_enc=data_enc,
+                num_features=num_features,
+                seed=seed,
+                max_epochs=30,
+                patience=4
+            )
+            val_preds_all.append(v_p)
+            test_preds_all.append(t_p)
+
+    final_val_preds = np.mean(val_preds_all, axis=0)
+    final_test_preds = np.mean(test_preds_all, axis=0)
+
+    val_targets = data_enc["y_val"]
+    ensemble_auc = roc_auc_score(val_targets, final_val_preds)
+    ensemble_loss = log_loss(val_targets, final_val_preds)
+    ensemble_primary = ensemble_auc - (0.5 * ensemble_loss)
+
+    print("\n=======================================================")
+    print(f"  STAGE 2 FINAL ENSEMBLE RESULTS")
+    print(f"  Ensemble Val AUC   : {ensemble_auc:.4f}")
+    print(f"  Ensemble Val Loss  : {ensemble_loss:.4f}")
+    print(f"  Ensemble Primary   : {ensemble_primary:.4f}")
+    print("=======================================================")
+
+    return {
+        "val_auc": float(ensemble_auc),
+        "val_loss": float(ensemble_loss),
+        "primary": float(ensemble_primary),
+        "val_preds": final_val_preds,
+        "test_preds": final_test_preds
+    }
