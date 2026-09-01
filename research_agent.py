@@ -66,6 +66,12 @@ def main() -> int:
                         help="Used only with --experiment baseline")
     parser.add_argument("--experiment", choices=["heterogeneous", "baseline"], default="heterogeneous")
     parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--patience", type=int, default=5)
+    parser.add_argument("--batch-size", type=int, default=65536)
+    parser.add_argument("--senet-embedding-dim", type=int, default=16)
+    parser.add_argument("--dcn-embedding-dim", type=int, default=20)
+    parser.add_argument("--eval-interval", type=int, default=3)
+    parser.add_argument("--seed-count", type=int, default=2)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, default=ROOT / "research_history.json")
     args = parser.parse_args()
@@ -80,7 +86,25 @@ def main() -> int:
     baseline_primary = 0.5946
     history: list[Iteration] = []
     if args.experiment == "heterogeneous":
-        experiment = [sys.executable, "-u", "train_heterogeneous_blend.py", "--epochs", str(args.epochs)]
+        experiment = [
+            sys.executable,
+            "-u",
+            "train_heterogeneous_blend.py",
+            "--epochs",
+            str(args.epochs),
+            "--patience",
+            str(args.patience),
+            "--batch-size",
+            str(args.batch_size),
+            "--senet-embedding-dim",
+            str(args.senet_embedding_dim),
+            "--dcn-embedding-dim",
+            str(args.dcn_embedding_dim),
+            "--eval-interval",
+            str(args.eval_interval),
+            "--seed-count",
+            str(args.seed_count),
+        ]
     else:
         experiment = [sys.executable, "-u", "baseline.py", "--model", args.model, "--seed", str(args.seed)]
 

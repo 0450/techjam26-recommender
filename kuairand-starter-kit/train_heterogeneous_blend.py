@@ -234,7 +234,8 @@ class MultiTaskLowRankDCNv2DeepFM(nn.Module):
 # ==========================================
 # Training Routines
 # ==========================================
-def train_model(model_type, seeds, enc, aux_targets, num_features, device, epochs=50, batch_size=8192, patience=50):
+def train_model(model_type, seeds, enc, aux_targets, num_features, device, epochs=50, batch_size=16384, patience=50,
+               senet_embedding_dim=32, dcn_embedding_dim=40, eval_interval=1):
     Xtr, ytr, utr = enc['train']
     Xva, yva, uva = enc['valid']
     Xte, yte, ute = enc['test']
@@ -263,11 +264,11 @@ def train_model(model_type, seeds, enc, aux_targets, num_features, device, epoch
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 
         if model_type == 'senet':
-            model = MultiTaskResidualSENetDeepFM(num_features, num_fields, embedding_dim=48, dropout_rate=0.2).to(device)
+            model = MultiTaskResidualSENetDeepFM(num_features, num_fields, embedding_dim=senet_embedding_dim, dropout_rate=0.2).to(device)
             optimizer = torch.optim.AdamW(model.parameters(), lr=4e-4, weight_decay=1e-3)
             loss_alpha, loss_beta = 0.2, 0.3
         else:
-            model = MultiTaskLowRankDCNv2DeepFM(num_features, num_fields, embedding_dim=64, rank=32, dropout_rate=0.2, emb_dropout=0.10).to(device)
+            model = MultiTaskLowRankDCNv2DeepFM(num_features, num_fields, embedding_dim=dcn_embedding_dim, rank=32, dropout_rate=0.2, emb_dropout=0.10).to(device)
             optimizer = torch.optim.AdamW(model.parameters(), lr=2e-4, weight_decay=2e-3)
             loss_alpha, loss_beta = 0.1, 0.1
 
@@ -297,33 +298,37 @@ def train_model(model_type, seeds, enc, aux_targets, num_features, device, epoch
 
             scheduler.step()
             epoch_loss = running_loss / len(train_loader)
-
-            model.eval()
-            with torch.no_grad():
-                val_logits, _, _ = model(Xva_tensor)
-                val_preds = torch.sigmoid(val_logits).cpu().numpy()
-
-                test_logits, _, _ = model(Xte_tensor)
-                test_preds = torch.sigmoid(test_logits).cpu().numpy()
-
-            val_res = evaluate(uva, yva, val_preds)
             dt = time.time() - t0
 
-            if val_res['primary'] > best_val_primary:
-                best_val_primary = val_res['primary']
-                best_val = val_preds.copy()
-                best_test = test_preds.copy()
-                patience_counter = 0
-                flag = "[BEST]"
+            should_evaluate = (epoch == 1) or (epoch % eval_interval == 0)
+            if should_evaluate:
+                model.eval()
+                with torch.no_grad():
+                    val_logits, _, _ = model(Xva_tensor)
+                    val_preds = torch.sigmoid(val_logits).cpu().numpy()
+
+                    test_logits, _, _ = model(Xte_tensor)
+                    test_preds = torch.sigmoid(test_logits).cpu().numpy()
+
+                val_res = evaluate(uva, yva, val_preds)
+
+                if val_res['primary'] > best_val_primary:
+                    best_val_primary = val_res['primary']
+                    best_val = val_preds.copy()
+                    best_test = test_preds.copy()
+                    patience_counter = 0
+                    flag = "[BEST]"
+                else:
+                    patience_counter += 1
+                    flag = f"[Patience {patience_counter}/{patience}]"
+
+                print(f"Epoch {epoch:02d}/{epochs:02d} | Loss: {epoch_loss:.4f} | Val GAUC: {val_res['GAUC']:.4f} | Val Primary: {val_res['primary']:.4f} | Time: {dt:.1f}s {flag}")
+
+                if patience_counter >= patience:
+                    print(f"Early stopping triggered at epoch {epoch:02d}.")
+                    break
             else:
-                patience_counter += 1
-                flag = f"[Patience {patience_counter}/{patience}]"
-
-            print(f"Epoch {epoch:02d}/{epochs:02d} | Loss: {epoch_loss:.4f} | Val GAUC: {val_res['GAUC']:.4f} | Val Primary: {val_res['primary']:.4f} | Time: {dt:.1f}s {flag}")
-
-            if patience_counter >= patience:
-                print(f"Early stopping triggered at epoch {epoch:02d}.")
-                break
+                print(f"Epoch {epoch:02d}/{epochs:02d} | Loss: {epoch_loss:.4f} | Time: {dt:.1f}s [skipped eval]")
 
         val_seed_preds.append(best_val)
         test_seed_preds.append(best_test)
@@ -341,7 +346,8 @@ def train_model(model_type, seeds, enc, aux_targets, num_features, device, epoch
 # ==========================================
 # Main Orchestration & Blend Grid Search
 # ==========================================
-def main(epochs=50, patience=50):
+def main(epochs=50, patience=5, batch_size=65536, senet_embedding_dim=16, dcn_embedding_dim=20,
+         eval_interval=3, seed_count=2):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using compute device: {device}")
 
@@ -350,15 +356,19 @@ def main(epochs=50, patience=50):
     enc, num_features = encode(splits)
     aux_targets = load_auxiliary_targets(splits)
 
-    seeds = [42, 1024, 2026, 7, 999]
+    seeds = [42, 1024, 2026, 7, 999][:seed_count]
 
     # Step 1: Train SENet DeepFM
     val_senet, test_senet = train_model('senet', seeds, enc, aux_targets, num_features, device,
-                                        epochs=epochs, patience=patience)
+                                        epochs=epochs, batch_size=batch_size, patience=patience,
+                                        senet_embedding_dim=senet_embedding_dim, dcn_embedding_dim=dcn_embedding_dim,
+                                        eval_interval=eval_interval)
 
     # Step 2: Train Low-Rank DCNv2
     val_dcn, test_dcn = train_model('lowrank_dcn', seeds, enc, aux_targets, num_features, device,
-                                    epochs=epochs, patience=patience)
+                                    epochs=epochs, batch_size=batch_size, patience=patience,
+                                    senet_embedding_dim=senet_embedding_dim, dcn_embedding_dim=dcn_embedding_dim,
+                                    eval_interval=eval_interval)
 
     # Step 3: Optimize Blending Weights & Power Exponent
     print("\n" + "=" * 60)
@@ -419,6 +429,16 @@ def main(epochs=50, patience=50):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--epochs', type=int, default=50)
-    parser.add_argument('--patience', type=int, default=50)
+    parser.add_argument('--patience', type=int, default=5)
+    parser.add_argument('--batch-size', type=int, default=65536)
+    parser.add_argument('--senet-embedding-dim', type=int, default=16)
+    parser.add_argument('--dcn-embedding-dim', type=int, default=20)
+    parser.add_argument('--eval-interval', type=int, default=3)
+    parser.add_argument('--seed-count', type=int, default=2)
     args = parser.parse_args()
-    main(epochs=args.epochs, patience=args.patience)
+    main(epochs=args.epochs, patience=args.patience,
+         batch_size=args.batch_size,
+         senet_embedding_dim=args.senet_embedding_dim,
+         dcn_embedding_dim=args.dcn_embedding_dim,
+         eval_interval=args.eval_interval,
+         seed_count=args.seed_count)
