@@ -220,7 +220,3 @@ The following commands were validated in this environment:
 ```
 
 This produced a valid run with metrics for the public validation split, confirming the setup and data path are working in the checked-out workspace.
-
----
-
-If you want, I can also turn this into a more polished project README for GitHub with sections like “Overview”, “Method”, “Quickstart”, “Experiment Loop”, and “Results”.
